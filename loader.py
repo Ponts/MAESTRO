@@ -44,7 +44,7 @@ class AudioReader():
 		files = self.findFiles(dir)
 
 		print("Files length: {}".format(len(files)))
-		randoms  = self.randomFiles(files)
+		randoms = self.randomFiles(files)
 		for filename in randoms:
 			audio, sr = librosa.load(filename, sr = None, mono = True)
 			audio = audio.reshape(-1,1)	
