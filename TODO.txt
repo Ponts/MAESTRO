@@ -1,0 +1,2 @@
+Add small GAN-making network to generator
+Make discriminator actual discriminator
