@@ -85,7 +85,7 @@ if __name__ == "__main__":
 			#bla = tf.multinomial(tf.log(generated), 1)
 			#print(np.shape(bla))
 			#sampling done with argmax atm, maybe change this...
-			fake_sample = ops.mu_law_decode(tf.reshape(tf.argmax(tf.nn.softmax(generated,2),2),[o.options["batch_size"],-1,1]), o.options["quantization_channels"]) # Gradient disappears
+			fake_sample = tf.reshape(tf.nn.softmax(generated,2),[o.options["batch_size"],-1,1]) # Gradient disappears
 			# Draw for each in batch according to temperature
 			'''
 			#np.seterr(divide='ignore') 			#temp
@@ -130,12 +130,10 @@ if __name__ == "__main__":
 	
 	discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits)
 	genLoss = -tf.reduce_mean(f_logits)
-	print(np.shape(f_logits))
-	print(np.shape(r_logits))
-	print(tf.gradients(f_logits, [generated]))
 
-	#genStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
-	#discStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(discLoss, var_list=discVars)
+
+	genStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
+	discStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(discLoss, var_list=discVars)
 	
 	graph = tf.get_default_graph()
 	fw.add_graph(graph)

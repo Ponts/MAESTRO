@@ -8,7 +8,7 @@ options = {
 						1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
 		"residual_channels": 32,
 		"dilation_channels": 32,
-		"quantization_channels": 256,
+		"quantization_channels": 1,
 		#"skip_channels": 512,
 		"skip_channels":256,
 		"use_biases": True,
