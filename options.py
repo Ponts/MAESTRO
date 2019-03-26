@@ -12,7 +12,7 @@ options = {
 		#"skip_channels": 512,
 		"skip_channels":256,
 		"use_biases": True,
-		"scalar_input": False,
+		"scalar_input": True,
 		"initial_filter_width": 32,
 		"batch_size" : 128,
 		"noise_dimensions" : 100,

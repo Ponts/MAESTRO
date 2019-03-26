@@ -1,6 +1,7 @@
 from __future__ import division
 
 import tensorflow as tf
+import numpy as np
 
 
 def create_adam_optimizer(learning_rate, momentum):
@@ -80,7 +81,7 @@ def mu_law_decode(output, quantization_channels):
     with tf.name_scope('decode'):
         mu = quantization_channels - 1
         # Map values back to [-1, 1].
-        signal = 2 * (tf.to_float(output) / mu) - 1
+        signal = 2 * (tf.cast(output, tf.float32) / mu) - 1 # no gradient?? tf.to_float(output)
         # Perform inverse of mu-law transformation.
         magnitude = (1 / mu) * ((1 + mu)**abs(signal) - 1)
         return tf.sign(signal) * magnitude
