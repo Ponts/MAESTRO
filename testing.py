@@ -5,30 +5,58 @@ import loader
 import numpy as np
 from WaveNET import ops 
 
+logdir = "./tfb_logs/"
 
-def generate(Generator, n):
-	return 0
+def load(saver, sess, logDir):
+	print("Trying to restore saved checkpoints from {} ...".format(logDir),
+		end="")
 
+	ckpt = tf.train.get_checkpoint_state(logDir)
+	if ckpt:
+		print("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
+		global_step = int(ckpt.model_checkpoint_path
+						.split('/')[-1]
+						.split('-')[-1])
+		print("  Global step was: {}".format(global_step))
+		print("  Restoring...", end="")
+		saver.restore(sess, ckpt.model_checkpoint_path)
+		print(" Done.")
+		return global_step
+	else:
+		print(" No checkpoint found.")
+		return None
 
+def train(genStep, discStep, genLoss, discLoss, fake_sample, coord, G, D, loader, graph=tf.get_default_graph()):
+	# Get the graph
+	sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
+	init = tf.global_variables_initializer()
+	sess.run(init)
+	# Saver
+	saver = tf.train.Saver(var_list=tf.trainable_variables(), max_to_keep=5)
+	try:
+		loaded = load(saver, sess, logdir)
+		if loaded is not None:
+			print("Restored model")
+	except:
+		print("Error in restoring model, terminating")
+		raise
+	
+	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+	loader.startThreads(sess)
+
+	
+	# Generate samples of the Discriminators receptive field
+	samples = []
+	recField = D.receptive_field
+	print("running fake sample")
+	#for i in range(recField):
+	sample = sess.run(fake_sample)#, feed_dict={abatch : loader.deque(o.options["batch_size"]), codedNoise : o.options["batch_size"]})
+	
+	print(sample)
 
 if __name__ == "__main__":
-	fw = tf.summary.FileWriter("./tfb_logs/")
+	fw = tf.summary.FileWriter(logdir)
 	coord = tf.train.Coordinator()
-	
-
-	#for audio, filename in l.loadAudio("maestro-v1.0.0/2017/"):
-	#	print(filename)
-	#	print(audio)
-	'''
-	if not o.options["scalar_input"]:
-		X = tf.placeholder(tf.float32, [None,2,o.options["quantization_channels"], o.options["residual_channels"]])
-		L = tf.placeholder(tf.float32, [None])
-	else:
-		X = tf.placeholder(tf.float32, [None,2,o.options["quantization_channels"], o.options["residual_channels"]])
-		L = tf.placeholder(tf.float32, [1,o.options["initial_filter_width"],o.options["quantization_channels"]])
-	'''
-	
-	
 
 	with tf.variable_scope("GEN/"):
 		Generator = model.WaveNetModel(o.options["batch_size"],
@@ -42,7 +70,8 @@ if __name__ == "__main__":
 			scalar_input=o.options["scalar_input"],
 			initial_filter_width=o.options["initial_filter_width"],
 			global_condition_channels=o.options["noise_dimensions"],
-			global_condition_cardinality=None)
+			global_condition_cardinality=None,
+			histograms=True)
 
 
 	with tf.variable_scope("DIS/"):
@@ -57,7 +86,8 @@ if __name__ == "__main__":
 			scalar_input=o.options["scalar_input"],
 			initial_filter_width=o.options["initial_filter_width"],
 			global_condition_channels=None,
-			global_condition_cardinality=None)
+			global_condition_cardinality=None,
+			histograms = True)
 	# Audio dimensions: [Song, Samplenr, Quantization]
 	# Data loading
 	with tf.name_scope("Pre-processing"):
@@ -78,8 +108,6 @@ if __name__ == "__main__":
 		noise = Generator._embed_gc(codedNoise)
 		generated = Generator._create_network(audio, noise)
 		
-		print(np.shape(generated))
-		print("^ = generated")
 
 		if o.options["scalar_input"]:
 			#bla = tf.multinomial(tf.log(generated), 1)
@@ -115,21 +143,21 @@ if __name__ == "__main__":
 	# Get the variables
 	genVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="GEN/")
 	discVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DIS/")
-
-	# GP
-	e = tf.random_uniform(tf.shape(daudio),0,1)
-	polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e)) #Dragons here
-
+	with tf.name_scope("GP/"):
+		# GP
+		e = tf.random_uniform(tf.shape(daudio),0,1)
+		polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e))
 	with tf.variable_scope("DIS/", reuse=True):
 		interm = Discriminator._create_network(polated, None)
 		discPolated = tf.layers.dense(interm, 1, name="final_D")
+	with tf.name_scope("GP/"):
 		grads = tf.gradients(discPolated,[polated])
-	#print((grads))
-	slope = tf.sqrt(tf.reduce_sum(tf.square(grads), reduction_indices=[1]))
+		#print((grads))
+		slope = tf.sqrt(tf.reduce_sum(tf.square(grads), reduction_indices=[1]))
 
-	
-	discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits)
-	genLoss = -tf.reduce_mean(f_logits)
+	with tf.name_scope("Loss/"):
+		discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits)
+		genLoss = -tf.reduce_mean(f_logits)
 
 
 	genStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
@@ -138,5 +166,8 @@ if __name__ == "__main__":
 	graph = tf.get_default_graph()
 	fw.add_graph(graph)
 
-	#threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+	train(genStep, discStep, genLoss, discLoss, fake_sample, coord, Generator, Discriminator, l, graph)
+
+
 

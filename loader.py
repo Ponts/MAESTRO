@@ -99,7 +99,7 @@ class AudioReader():
 
 	def startThreads(self, sess, nThreads=1):
 		for _ in range(nThreads):
-			thread = threading.Thread(target=threadMain, args=(sess,))
+			thread = threading.Thread(target=self.threadMain, args=(sess,))
 			thread.daemon=True
 			thread.start()
 			self.threads.append(thread)
