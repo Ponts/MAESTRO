@@ -4,6 +4,9 @@ import options as o
 import loader
 import numpy as np
 from WaveNET import ops 
+import progressbar
+from time import sleep
+
 
 logdir = "./tfb_logs/"
 
@@ -26,7 +29,7 @@ def load(saver, sess, logDir):
 		print(" No checkpoint found.")
 		return None
 
-def train(genStep, discStep, genLoss, discLoss, fake_sample, coord, G, D, loader, graph=tf.get_default_graph()):
+def train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord, G, D, loader, one_step, generated, abatch, graph=tf.get_default_graph()):
 	# Get the graph
 	sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
 	init = tf.global_variables_initializer()
@@ -49,10 +52,18 @@ def train(genStep, discStep, genLoss, discLoss, fake_sample, coord, G, D, loader
 	samples = []
 	recField = D.receptive_field
 	print("running fake sample")
+	#sample = sess.run(loader.deque(o.options["batch_size"]))
+	#print(loader.deque(o.options["batch_size"]))
 	#for i in range(recField):
-	sample = sess.run(fake_sample)#, feed_dict={abatch : loader.deque(o.options["batch_size"]), codedNoise : o.options["batch_size"]})
+	#	sam = sess.run(fake_sample)
+	init_audio, init_noise  = sess.run([audio,noise])
+
+
+	fakey = sess.run(fake_sample, feed_dict={audio:init_audio, codedNoise:init_noise})
+	print(np.shape(fakey))
+	print(np.shape(init_audio))
+	fakey2 = sess.run(fake_sample, feed_dict={audio:fakey, codedNoise:init_noise})
 	
-	print(sample)
 
 if __name__ == "__main__":
 	fw = tf.summary.FileWriter(logdir)
@@ -91,29 +102,27 @@ if __name__ == "__main__":
 	# Audio dimensions: [Song, Samplenr, Quantization]
 	# Data loading
 	with tf.name_scope("Pre-processing"):
-		l = loader.AudioReader("maestro-v1.0.0", o.options["sample_rate"], 3, coord)
+		l = loader.AudioReader("maestro-v1.0.0", o.options["sample_rate"], Discriminator.receptive_field, coord, sampleSize=o.options["sample_size"])
 		abatch = l.deque(o.options["batch_size"])
-		if o.options["scalar_input"]:
-			encoded = tf.reshape(tf.cast(abatch, tf.float32), [o.options["batch_size"], -1, 1])
-		else:
-			encoded = ops.mu_law_encode(abatch, o.options["quantization_channels"])
+		encoded = tf.reshape(tf.cast(abatch, tf.float32), [o.options["batch_size"], -1, 1])
 		codedNoise = l.dequeNoise(o.options["batch_size"])
 
 	# Generator stuff
 	with tf.variable_scope("GEN/", reuse=tf.AUTO_REUSE):
-		if o.options["scalar_input"]:
-			audio = encoded
-		else:
-			audio = Generator._one_hot(encoded)
+		audio = encoded
 		noise = Generator._embed_gc(codedNoise)
 		generated = Generator._create_network(audio, noise)
-		
 
-		if o.options["scalar_input"]:
+		with tf.name_scope("Generating/"):
 			#bla = tf.multinomial(tf.log(generated), 1)
 			#print(np.shape(bla))
-			#sampling done with argmax atm, maybe change this...
-			fake_sample = tf.reshape(tf.nn.softmax(generated,2),[o.options["batch_size"],-1,1]) # Gradient disappears
+			#for i in range(Discriminator.receptive_field):
+			# generate one sample			
+			one_step = tf.reshape(generated,[o.options["batch_size"],-1,1]) # Gradient disappears
+			# Shift the generated vector
+			fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), one_step),1)
+
+			#print(i / Discriminator.receptive_field)
 			# Draw for each in batch according to temperature
 			'''
 			#np.seterr(divide='ignore') 			#temp
@@ -130,19 +139,17 @@ if __name__ == "__main__":
 	
 	# Discriminator stuff
 	with tf.variable_scope("DIS/", reuse=tf.AUTO_REUSE):
-		if o.options["scalar_input"]:
-			daudio = encoded
-		else:
-			daudio = Discriminator._one_hot(encoded)			
+		daudio = encoded
 		real_output = Discriminator._create_network(daudio, None)
 		r_logits = tf.layers.dense(real_output, 1, name="final_D")
 	with tf.variable_scope("DIS/", reuse=True):
-		fake_output=Discriminator._create_network(fake_sample, None)
+		fake_output = Discriminator._create_network(fake_sample, None)
 		f_logits = tf.layers.dense(fake_output, 1, name="final_D")
 
 	# Get the variables
 	genVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="GEN/")
 	discVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DIS/")
+
 	with tf.name_scope("GP/"):
 		# GP
 		e = tf.random_uniform(tf.shape(daudio),0,1)
@@ -156,7 +163,7 @@ if __name__ == "__main__":
 		slope = tf.sqrt(tf.reduce_sum(tf.square(grads), reduction_indices=[1]))
 
 	with tf.name_scope("Loss/"):
-		discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits)
+		discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits) + 10*tf.reduce_mean((slope-1)**2)
 		genLoss = -tf.reduce_mean(f_logits)
 
 
@@ -166,8 +173,8 @@ if __name__ == "__main__":
 	graph = tf.get_default_graph()
 	fw.add_graph(graph)
 
-
-	train(genStep, discStep, genLoss, discLoss, fake_sample, coord, Generator, Discriminator, l, graph)
+	print(audio)
+	train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord, Generator, Discriminator, l, one_step, generated, abatch, graph)
 
 
 

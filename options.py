@@ -11,11 +11,12 @@ options = {
 		"quantization_channels": 1,
 		#"skip_channels": 512,
 		"skip_channels":256,
-		"use_biases": True,
+		"use_biases": False,
 		"scalar_input": True,
 		"initial_filter_width": 32,
 		"batch_size" : 128,
 		"noise_dimensions" : 100,
 		"noise_variance" : 1.0,
 		"noise_mean" : 0.0,
+		"sample_size" : 1,
 	}

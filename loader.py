@@ -88,14 +88,13 @@ class AudioReader():
 						.format(filename))
 				audio = np.pad(audio, [[self.receptiveField, 0],[0,0]],'constant')
 
-				if self.sampleSize:
-					while len(audio) > self.receptiveField:
-						piece = audio[:(self.receptiveField + self.sampleSize), :]
-						sess.run(self.sampleQue, feed_dict={self.sampleHolder : piece})
-						audio = audio[self.sampleSize:,:]
+				while len(audio) > self.receptiveField:
+					piece = audio[:(self.receptiveField), :] #+ self.sampleSize), :]
+					sess.run(self.sampleEnque, feed_dict={self.sampleHolder : piece})
+					audio = audio[self.sampleSize:,:]
 
-						noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noisedimensions"]).reshape(-1,1)
-						sess.run(self.noiseQue, feed_dict={self.noiseHolder : noise})
+					noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noise_dimensions"]).reshape(1,-1)
+					sess.run(self.noiseEnque, feed_dict={self.noiseHolder : noise})
 
 	def startThreads(self, sess, nThreads=1):
 		for _ in range(nThreads):
