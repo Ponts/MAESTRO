@@ -28,6 +28,8 @@ class AudioReader():
 		self.noiseQue = tf.PaddingFIFOQueue(self.queueSize, ['float32'], shapes=[(None, o.options["noise_dimensions"])], name="Noise_Queue")
 		self.noiseEnque = self.noiseQue.enqueue([self.noiseHolder])
 
+		self.quedNoise = 0
+
 	def randomFiles(self, files):
 		for file in files:
 			file_index = random.randint(0, (len(files) - 1))
@@ -37,6 +39,7 @@ class AudioReader():
 		return self.sampleQue.dequeue_many(n)
 
 	def dequeNoise(self, n):
+		self.quedNoise -= n
 		return self.noiseQue.dequeue_many(n)
 
 	def findFiles(self, directory, pattern='*.wav'):
@@ -50,7 +53,7 @@ class AudioReader():
 	def loadAudio(self, dir, sar=None):
 		files = self.findFiles(dir)
 
-		print("Files length: {}".format(len(files)))
+		#print("Files length: {}".format(len(files)))
 		randoms = self.randomFiles(files)
 		for filename in randoms:
 			audio, sr = librosa.load(filename, sr = sar, mono = True)
@@ -68,9 +71,8 @@ class AudioReader():
 		return audio[indices[0]:indices[-1]] if indices.size else audio[0:0]
 
 
-	def threadMain(self, sess):
+	def threadMainAudio(self, sess):
 		stop = False
-		iters = 0
 		while not stop:
 			iterator = self.loadAudio(self.dir, sar=self.sampleRate)
 
@@ -88,20 +90,42 @@ class AudioReader():
 						.format(filename))
 				audio = np.pad(audio, [[self.receptiveField, 0],[0,0]],'constant')
 
-				while len(audio) > self.receptiveField:
-					piece = audio[:(self.receptiveField), :] #+ self.sampleSize), :]
-					sess.run(self.sampleEnque, feed_dict={self.sampleHolder : piece})
-					audio = audio[self.sampleSize:,:]
+				add = 0
+				while add + self.sampleSize < len(audio): #len(audio) > self.receptiveField:
+					  #+ self.sampleSize), :]
+					#print(add + self.sampleSize < len(audio))
+					sess.run(self.sampleEnque, feed_dict={self.sampleHolder : audio[add:add+self.receptiveField, :]})
+					#audio = audio[self.sampleSize:,:]
+					add += self.sampleSize
+					#noiseSize = sess.run(self.noiseQue.size())
+					#print(noiseSize)
+					#if noiseSize < self.queueSize: #Que noise if needed
+					#	noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noise_dimensions"]).reshape(1,-1)
+					#	sess.run(self.noiseEnque, feed_dict={self.noiseHolder : noise})
 
-					noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noise_dimensions"]).reshape(1,-1)
-					sess.run(self.noiseEnque, feed_dict={self.noiseHolder : noise})
+
+	def threadMainNoise(self, sess):
+		stop = False
+		while not stop:
+			if self.coord.should_stop():
+				stop = True
+				break
+			#+ self.sampleSize), :]
+			#print(add + self.sampleSize < len(audio))
+			noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noise_dimensions"]).reshape(1,-1)
+			sess.run(self.noiseEnque, feed_dict={self.noiseHolder : noise})
+
 
 	def startThreads(self, sess, nThreads=1):
 		for _ in range(nThreads):
-			thread = threading.Thread(target=self.threadMain, args=(sess,))
+			thread = threading.Thread(target=self.threadMainAudio, args=(sess,))
 			thread.daemon=True
 			thread.start()
 			self.threads.append(thread)
+			thread2 = threading.Thread(target=self.threadMainNoise, args=(sess,))
+			thread2.daemon=True
+			thread2.start()
+			self.threads.append(thread2)
 
 
 

@@ -6,6 +6,7 @@ import numpy as np
 from WaveNET import ops 
 import progressbar
 from time import sleep
+import os, sys
 
 
 logdir = "./tfb_logs/"
@@ -29,7 +30,19 @@ def load(saver, sess, logDir):
 		print(" No checkpoint found.")
 		return None
 
-def train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord, G, D, loader, one_step, generated, abatch, graph=tf.get_default_graph()):
+def save(saver, sess, logdir, step):
+	model_name = 'model.ckpt'
+	checkpoint_path = os.path.join(logdir, model_name)
+	print('Storing checkpoint to {} ...'.format(logdir), end="")
+	sys.stdout.flush()
+
+	if not os.path.exists(logdir):
+		os.makedirs(logdir)
+
+	saver.save(sess, checkpoint_path, global_step=step)
+	print(' Done.')
+
+def train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord, G, D, loader, one_step, generated, abatch, f_logits, r_logits, grads, graph=tf.get_default_graph()):
 	# Get the graph
 	sess = tf.Session(config=tf.ConfigProto(log_device_placement=False))
 	init = tf.global_variables_initializer()
@@ -37,8 +50,8 @@ def train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord
 	# Saver
 	saver = tf.train.Saver(var_list=tf.trainable_variables(), max_to_keep=5)
 	try:
-		loaded = load(saver, sess, logdir)
-		if loaded is not None:
+		last_global_step = load(saver, sess, logdir)
+		if last_global_step is not None:
 			print("Restored model")
 	except:
 		print("Error in restoring model, terminating")
@@ -51,18 +64,54 @@ def train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord
 	# Generate samples of the Discriminators receptive field
 	samples = []
 	recField = D.receptive_field
-	print("running fake sample")
+	print("Receptive field: " + str(recField))
 	#sample = sess.run(loader.deque(o.options["batch_size"]))
 	#print(loader.deque(o.options["batch_size"]))
 	#for i in range(recField):
 	#	sam = sess.run(fake_sample)
-	init_audio, init_noise  = sess.run([audio,noise])
+	step = last_global_step
+	last_saved_step = last_global_step
+	if last_saved_step is None:
+		last_saved_step = 0
+		step = 0
+
+	try:
+		for j in range(100):
+			step += 1
+			
+			# Train D 5 times
+			init_noise = sess.run(noise)
+			for i in range(5):
+				print("Getting audio")
+				init_audio = sess.run(audio)
+				#sess.run(discStep, feed_dict={codedNoise : init_noise})
+				
+				# This row should be replaced with longer samples later in training?
+				fakey = sess.run(fake_sample, feed_dict={audio:init_audio, codedNoise:init_noise})
+				sess.run(discStep, feed_dict={fake_sample : fakey, codedNoise : init_noise, daudio : init_audio})
+				print("Done")
+
+			# Train G 1 time
+			#_, dLoss, gLoss = sess.run([genStep, discLoss, genLoss], feed_dict={audio : init_audio, codedNoise : init_noise, daudio : init_audio})
+			_, dLoss, gLoss = sess.run([genStep, discLoss, genLoss], feed_dict={codedNoise : init_noise})
+			print("DiscLoss: " + str(dLoss))
+			print("GenLoss:  " + str(gLoss))
+
+			if step % 50 == 0:
+				print("SAVING")
+				print(step)
+				save(saver, sess, logdir, step)
 
 
-	fakey = sess.run(fake_sample, feed_dict={audio:init_audio, codedNoise:init_noise})
-	print(np.shape(fakey))
-	print(np.shape(init_audio))
-	fakey2 = sess.run(fake_sample, feed_dict={audio:fakey, codedNoise:init_noise})
+	except KeyboardInterrupt:
+		# Introduce a line break after ^C is displayed so save message
+		# is on its own line.
+		print()
+	finally:
+		if step > last_saved_step:
+			save(saver, sess, logdir, step)
+			coord.request_stop()
+			coord.join(threads)
 	
 
 if __name__ == "__main__":
@@ -112,39 +161,20 @@ if __name__ == "__main__":
 		audio = encoded
 		noise = Generator._embed_gc(codedNoise)
 		generated = Generator._create_network(audio, noise)
-
 		with tf.name_scope("Generating/"):
-			#bla = tf.multinomial(tf.log(generated), 1)
-			#print(np.shape(bla))
-			#for i in range(Discriminator.receptive_field):
-			# generate one sample			
-			one_step = tf.reshape(generated,[o.options["batch_size"],-1,1]) # Gradient disappears
+			one_step = tf.reshape(generated,[o.options["batch_size"],-1,1]) 
 			# Shift the generated vector
 			fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), one_step),1)
 
-			#print(i / Discriminator.receptive_field)
-			# Draw for each in batch according to temperature
-			'''
-			#np.seterr(divide='ignore') 			#temp
-			scaled_prediction = tf.log(generated) / 0.9
-			scaled_prediction = (scaled_prediction -
-								tf.tile(tf.reshape(tf.reduce_logsumexp(scaled_prediction, 2),[1,-1,o.options["quantization_channels"]]), [o.options["batch_size"],1,1]))
-			scaled_prediction = tf.reshape(tf.exp(scaled_prediction), [o.options["batch_size"],o.options["quantization_channels"]])
-			#np.seterr(divide='warn')
-
-			#sample = np.random.choice(np.arange(o.options["quantization_channels"]), o.options["batch_size"], p=scaled_prediction)
-			generated = ops.mu_law_decode(tf.reshape(tf.multinomial(tf.log(scaled_prediction),1),[o.options["batch_size"],-1,1]), o.options["quantization_channels"])
-			'''
-			
 	
 	# Discriminator stuff
 	with tf.variable_scope("DIS/", reuse=tf.AUTO_REUSE):
 		daudio = encoded
-		real_output = Discriminator._create_network(daudio, None)
-		r_logits = tf.layers.dense(real_output, 1, name="final_D")
+		r_logits = Discriminator._create_network(daudio, None)
+		#r_logits = tf.layers.dense(real_output, 1, name="final_D")
 	with tf.variable_scope("DIS/", reuse=True):
-		fake_output = Discriminator._create_network(fake_sample, None)
-		f_logits = tf.layers.dense(fake_output, 1, name="final_D")
+		f_logits = Discriminator._create_network(fake_sample, None)
+		#f_logits = tf.layers.dense(fake_output, 1, name="final_D")
 
 	# Get the variables
 	genVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="GEN/")
@@ -154,12 +184,12 @@ if __name__ == "__main__":
 		# GP
 		e = tf.random_uniform(tf.shape(daudio),0,1)
 		polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e))
+
 	with tf.variable_scope("DIS/", reuse=True):
-		interm = Discriminator._create_network(polated, None)
-		discPolated = tf.layers.dense(interm, 1, name="final_D")
+		discPolated = Discriminator._create_network(polated, None)
+		
 	with tf.name_scope("GP/"):
-		grads = tf.gradients(discPolated,[polated])
-		#print((grads))
+		grads = tf.gradients(discPolated,[polated])[0]
 		slope = tf.sqrt(tf.reduce_sum(tf.square(grads), reduction_indices=[1]))
 
 	with tf.name_scope("Loss/"):
@@ -173,8 +203,7 @@ if __name__ == "__main__":
 	graph = tf.get_default_graph()
 	fw.add_graph(graph)
 
-	print(audio)
-	train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord, Generator, Discriminator, l, one_step, generated, abatch, graph)
+	train(genStep, discStep, genLoss, discLoss, fake_sample, audio, noise, coord, Generator, Discriminator, l, one_step, generated, abatch, f_logits, r_logits, slope, graph)
 
 
 

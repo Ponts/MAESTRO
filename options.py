@@ -14,7 +14,7 @@ options = {
 		"use_biases": False,
 		"scalar_input": True,
 		"initial_filter_width": 32,
-		"batch_size" : 128,
+		"batch_size" : 8, #32 gives OOM
 		"noise_dimensions" : 100,
 		"noise_variance" : 1.0,
 		"noise_mean" : 0.0,
