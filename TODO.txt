@@ -1,2 +1,5 @@
-Add small GAN-making network to generator
-Make discriminator actual discriminator
+Train ML only without noise for longer to see if it works
+
+Train ML only with noise then GAN
+
+Change where noise is input

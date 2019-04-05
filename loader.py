@@ -10,7 +10,7 @@ import random
 
 
 class AudioReader():
-	def __init__(self, aDir, sampleRate, receptiveField, coord, sampleSize=None, silenceThreshold=None, queueSize=o.options["batch_size"]):
+	def __init__(self, aDir, sampleRate, receptiveField, coord, stepSize = 1, sampleSize=None, silenceThreshold=None, queueSize=o.options["batch_size"]):
 		self.dir = aDir
 		self.coord = coord
 		self.sampleRate = sampleRate
@@ -18,6 +18,7 @@ class AudioReader():
 		self.sampleSize = sampleSize
 		self.silenceThreshold = silenceThreshold
 		self.queueSize = queueSize
+		self.stepSize = stepSize
 
 		self.threads = []
 		self.sampleHolder = tf.placeholder(tf.float32, shape=None)
@@ -28,7 +29,12 @@ class AudioReader():
 		self.noiseQue = tf.PaddingFIFOQueue(self.queueSize, ['float32'], shapes=[(None, o.options["noise_dimensions"])], name="Noise_Queue")
 		self.noiseEnque = self.noiseQue.enqueue([self.noiseHolder])
 
-		self.quedNoise = 0
+		self.mlHolder = tf.placeholder(tf.float32, shape=None)
+		self.mlQue = tf.PaddingFIFOQueue(self.queueSize*2, ['float32'], shapes=[(None,1)], name="ML_QUE")
+		self.mlEnque = self.mlQue.enqueue([self.mlHolder])
+
+		self.mlDone = False
+
 
 	def randomFiles(self, files):
 		for file in files:
@@ -39,8 +45,10 @@ class AudioReader():
 		return self.sampleQue.dequeue_many(n)
 
 	def dequeNoise(self, n):
-		self.quedNoise -= n
 		return self.noiseQue.dequeue_many(n)
+
+	def dequeMl(self, n):
+		return self.mlQue.dequeue_many(n)
 
 	def findFiles(self, directory, pattern='*.wav'):
 		'''Recursively finds all files matching the pattern.'''
@@ -91,12 +99,12 @@ class AudioReader():
 				audio = np.pad(audio, [[self.receptiveField, 0],[0,0]],'constant')
 
 				add = 0
-				while add + self.sampleSize < len(audio): #len(audio) > self.receptiveField:
+				while add + self.stepSize < len(audio): #len(audio) > self.receptiveField:
 					  #+ self.sampleSize), :]
 					#print(add + self.sampleSize < len(audio))
 					sess.run(self.sampleEnque, feed_dict={self.sampleHolder : audio[add:add+self.receptiveField, :]})
 					#audio = audio[self.sampleSize:,:]
-					add += self.sampleSize
+					add += self.stepSize
 					#noiseSize = sess.run(self.noiseQue.size())
 					#print(noiseSize)
 					#if noiseSize < self.queueSize: #Que noise if needed
@@ -116,16 +124,51 @@ class AudioReader():
 			sess.run(self.noiseEnque, feed_dict={self.noiseHolder : noise})
 
 
+	def threadMlAudio(self,sess):
+		stop = False
+		while not stop:
+			iterator = self.loadAudio(self.dir, sar=self.sampleRate)
+
+			for audio, filename in iterator:
+				if self.coord.should_stop() or self.mlDone:
+					stop = True
+					sess.run(self.mlQue.close())
+					break
+				if self.silenceThreshold is not None:
+					audio = self.trimSilence(audio[:, 0], self.silenceThreshold)
+					audio = audio.reshape(-1, 1)
+					if audio.size == 0:
+						print("Warning: {} was ignored as it contains only "
+						"silence. Consider decreasing trim_silence "
+						"threshold, or adjust volume of the audio."
+						.format(filename))
+				audio = np.pad(audio, [[self.receptiveField, 0],[0,0]],'constant')
+				#sess.run(self.mlEnque, feed_dict={self.mlHolder : audio})
+				# Cut samples into pieces of size receptive_field +
+				# sample_size with receptive_field overlap
+				while len(audio) > self.receptiveField:
+					piece = audio[:(self.receptiveField + self.sampleSize), :]
+					sess.run(self.mlEnque, feed_dict={self.mlHolder : piece})
+					audio = audio[self.sampleSize:, :]
+
+
+
 	def startThreads(self, sess, nThreads=1):
 		for _ in range(nThreads):
 			thread = threading.Thread(target=self.threadMainAudio, args=(sess,))
 			thread.daemon=True
 			thread.start()
 			self.threads.append(thread)
+
 			thread2 = threading.Thread(target=self.threadMainNoise, args=(sess,))
 			thread2.daemon=True
 			thread2.start()
 			self.threads.append(thread2)
+
+			thread3 = threading.Thread(target=self.threadMlAudio, args=(sess,))
+			thread3.daemon=True
+			thread3.start()
+			self.threads.append(thread3)
 
 
 

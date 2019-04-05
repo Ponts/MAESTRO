@@ -55,7 +55,9 @@ class WaveNetModel(object):
                  initial_filter_width=32,
                  histograms=False,
                  global_condition_channels=None,
-                 global_condition_cardinality=None):
+                 global_condition_cardinality=None,
+                 final_layer_size=256,
+                 add_noise=False):
         '''Initializes the WaveNet model.
         Args:
             batch_size: How many audio files are supplied per batch
@@ -105,6 +107,8 @@ class WaveNetModel(object):
         self.histograms = histograms
         self.global_condition_channels = global_condition_channels
         self.global_condition_cardinality = global_condition_cardinality
+        self.final_layer_size = final_layer_size
+        self.add_noise = add_noise
 
         self.receptive_field = WaveNetModel.calculate_receptive_field(
             self.filter_width, self.dilations, self.scalar_input,
@@ -218,15 +222,21 @@ class WaveNetModel(object):
                     [1, self.skip_channels, self.skip_channels])
                 current['postprocess2'] = create_variable(
                     'postprocess2',
-                    [1, self.skip_channels, self.quantization_channels])
+                    [1, self.skip_channels, self.final_layer_size])
                 if self.use_biases:
                     current['postprocess1_bias'] = create_bias_variable(
                         'postprocess1_bias',
                         [self.skip_channels])
                     current['postprocess2_bias'] = create_bias_variable(
                         'postprocess2_bias',
-                        [self.quantization_channels])
+                        [self.final_layer_size])
                 var['postprocessing'] = current
+
+            if self.add_noise:
+                current = dict()
+                with tf.variable_scope('gan_noise'):
+                    current["noise"] = create_variable('noise', [1,100,self.quantization_channels]) # Maybe wrong??
+                var['noise'] = current
 
         return var
 
@@ -383,7 +393,7 @@ class WaveNetModel(object):
 
         return skip_contribution, input_batch + transformed
 
-    def _create_network(self, input_batch, global_condition_batch):
+    def _create_network(self, input_batch, global_condition_batch, noise = None):
         '''Construct the WaveNet network.'''
         outputs = []
         current_layer = input_batch
@@ -405,6 +415,9 @@ class WaveNetModel(object):
         with tf.name_scope('postprocessing'):
             # Perform (+) -> ReLU -> 1x1 conv -> ReLU -> 1x1 conv to
             # postprocess the output.
+            if self.add_noise:
+                n = self.variables['noise']['noise']
+
             w1 = self.variables['postprocessing']['postprocess1']
             w2 = self.variables['postprocessing']['postprocess2']
             if self.use_biases:
@@ -420,8 +433,13 @@ class WaveNetModel(object):
 
             # We skip connections from the outputs of each layer, adding them
             # all up here.
-            total = sum(outputs)
+            if self.add_noise:
+                noised = tf.nn.conv1d(noise,n,stride=1, padding="SAME")
+                outputs.append(noised)
+
+            total = sum(outputs) # Make noise vector one of these?
             transformed1 = tf.nn.relu(total)
+
             conv1 = tf.nn.conv1d(transformed1, w1, stride=1, padding="SAME")
             if self.use_biases:
                 conv1 = tf.add(conv1, b1)

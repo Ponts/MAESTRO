@@ -116,3 +116,14 @@ dmypy.json
 #Dirs
 maestro-v1.0.0/
 tfb_logs/
+tfb_log.*/
+
+tfb_logs-mlonly/checkpoint
+*.DESKTOP-81ETCOI
+*.data-00000-of-00001
+*.meta
+*.index
+tfb_logs_firstversion_withGP/checkpoint
+tfb_logs_mlonly60k_nonoiseml/checkpoint
+tfb_logs_mlonly_13k/checkpoint
+tfb_logs_with_pretraining_unboundGP/checkpoint

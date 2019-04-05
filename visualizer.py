@@ -112,8 +112,11 @@ class Visualizer():
 			sl = int(sr*time)
 		else:
 			sl = self.sampleLength
-		
-
+		print(len(audio))
+		#print(audio[int(len(audio)/2):int(len(audio)/2)+300])
+		plt.plot(audio)#[int(len(audio)/2):int(len(audio)/2)+5147])
+		plt.show()
+		return
 		length = len(audio)
 		duration = (float(sl)/float(sr))
 		i = 0
@@ -149,7 +152,7 @@ class Visualizer():
 			# writing to the stream is what *actually* plays the sound.
 			stream.write(data)
 			data = w.readframes(sl)
-			note, amp = self.detectNote(np.log(np.abs(np.fft.rfft(np.blackman(sl)*audio[i:i+sl])) + 1e-5), time)
+			note, amp = self.detectNote(np.log(np.abs(np.fft.rfft(np.blackman(sl)*audio[i:i+sl])) + 1e-5), time) # Move this to the detect note function
 			if prevNote != note and amp > 1.5:
 				print("note: %s, amp %0.4f"%(note, amp))
 				prevNote = note
@@ -160,12 +163,25 @@ class Visualizer():
 		p.terminate()		
 
 
+	def compare(self, song1, song2, sar1=None, sar2=None):
+		audio1, sr1 = self.loadAudio(song1, sar1)
+		audio2, sr2 = self.loadAudio(song2, sar2)
+
+		plt.plot(audio1[5117:-1])#[int(len(audio)/2):int(len(audio)/2)+5147])
+		plt.plot(audio2[5117:-1])#[int(len(audio)/2):int(len(audio)/2)+5147])
+
+		diff = np.average(audio1[5117:-1] - audio2[5117:-1])
+		print(diff)
+		plt.show()
 
 			
 
 
 if __name__ == "__main__":
 	vis = Visualizer(2**16)
-	#vis.visAudio("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_046_PIANO046_MID--AUDIO-split_07-06-17_Piano-e_2-02_wav--1.wav", dynamicSl = True, time = 0.02)
-	vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
+	#vis.visAudio("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--2.wav", dynamicSl = True, time = 0.02)
+	vis.visAudio("D:\\MAESTRO\\Generated\\gangen.wav", dynamicSl = True, time=0.02)
+	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
+	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
+	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
 
