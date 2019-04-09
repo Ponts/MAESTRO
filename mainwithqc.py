@@ -107,7 +107,7 @@ def generate(length, conditionOn = None):
 	noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noise_dimensions"]).reshape(1,1,-1)
 
 	# REMOVE THIS LATER
-	#noise = np.zeros((1,1,100))
+	noise = np.zeros((1,1,100))
 	fakey = np.reshape(fakey, [1,-1,1])
 	gen = sess.run(encoded, feed_dict={sampleph : fakey})
 	generated = gen#[0,:,0].tolist()
@@ -123,22 +123,19 @@ def generate(length, conditionOn = None):
 		#Sample from newest_sample
 
 		np.seterr(divide='ignore')
-		scaled_prediction = np.log(newest_sample) / 0.9#args.temperature
+		scaled_prediction = np.log(newest_sample) / 0.99#args.temperature
 		scaled_prediction = (scaled_prediction -
 							np.logaddexp.reduce(scaled_prediction))
 		scaled_prediction = np.exp(scaled_prediction)
 		np.seterr(divide='warn')
 		# Prediction distribution at temperature=1.0 should be unchanged after
 		# scaling.
-		#print(newest_sample)
+		#print(np.argmax(scaled_prediction))
 		sample = np.random.choice(
-		    np.arange(o.options["quantization_channels"]), p=scaled_prediction)
-		#generated.append(sample)
+			np.arange(o.options["quantization_channels"]), p=scaled_prediction)
+		#sample = np.argmax(scaled_prediction)
 		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
-		#print(np.shape(generated))
 		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
-		#fakey = sess.run(deco)
-		#generated.append(fakey[-1,-1,-1])
 		bar.update(i+1)
 
 	bar.finish()
@@ -149,7 +146,21 @@ def generate(length, conditionOn = None):
 	librosa.output.write_wav("Generated/gangen.wav", generated, sr, norm=True)
 
 	
-
+def feature_max(G, layerName):
+	conf = tf.ConfigProto(log_device_placement=False)
+	sess = tf.Session(config=conf)
+	init = tf.global_variables_initializer()
+	sess.run(init)
+	saver = tf.train.Saver(var_list=tf.trainable_variables(), max_to_keep=5)
+	try:
+		last_global_step = load(saver, sess, logdir)
+		if last_global_step is not None:
+			print("Restored model")
+	except:
+		print("Error in restoring model, terminating")
+		raise
+	
+	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
 
 
@@ -188,14 +199,24 @@ def train(coord, G, D, loader, fw):
 	if last_saved_step is None:
 		last_saved_step = 0
 		step = 0
-
-	try:
+	try:			   
 		for j in range(1000000):
-			if step < 80000: # Do Non-gan init training
+			if step < 500000: # Do Non-gan init training
 				startTime = time.time()
 				_, lossMl = sess.run([mlStep, mlLoss])
-				if step % 100 == 0:
-					_, dLoss = sess.run([discStep, discLoss])
+				if step % 10000 == 0 and step > 10000:
+					init_noise = sess.run(noise)
+					init_audio = sess.run(audio)
+					bar = progressbar.ProgressBar(maxval=recField, \
+						widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+					bar.start()
+					for k in range(recField):
+						fakey = sess.run(fake_sample, feed_dict={audio:init_audio, noise:init_noise})
+						#print(fakey[-1,-1,-1])
+						bar.update(k+1)
+					_, dLoss = sess.run([discStep, discLoss], feed_dict={fake_sample : fakey, noise : init_noise, daudio : init_audio})
+					bar.finish()
+					#_, dLoss = sess.run([discStep, discLoss])
 					#base, gen, target = sess.run([mldequed, ml_one_step, mltarget])
 					print("Disc Loss : " + str(dLoss))
 				dur = time.time() - startTime
@@ -203,7 +224,7 @@ def train(coord, G, D, loader, fw):
 				
 			else: # Do gan-training
 				#save(saver, sess, logdir, step)
-				#return #FOR NOW
+				return #FOR NOW
 				loader.mlDone = True
 
 				# Train D 5 times	
@@ -257,148 +278,170 @@ def train(coord, G, D, loader, fw):
 	
 
 if __name__ == "__main__":
-	#generate(300, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav")
-	
-	#if True:
-	#	print("Done")
-	#else:
+	doGen = True
+	if doGen:
+		generate(16000, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav")
+	else:
+		fw = tf.summary.FileWriter(logdir)
+		coord = tf.train.Coordinator()
+
+		with tf.variable_scope("GEN/"):
+			Generator = model.WaveNetModel(o.options["batch_size"],
+				dilations=o.options["dilations"],
+				filter_width=o.options["filter_width"],
+				residual_channels=o.options["residual_channels"],
+				dilation_channels=o.options["dilation_channels"],
+				skip_channels=o.options["skip_channels"],
+				quantization_channels=o.options["quantization_channels"],
+				use_biases=o.options["use_biases"],
+				scalar_input=o.options["scalar_input"],
+				initial_filter_width=o.options["initial_filter_width"],
+				#global_condition_channels=o.options["noise_dimensions"],
+				global_condition_cardinality=None,
+				histograms=True,
+				final_layer_size=o.options["quantization_channels"],
+				add_noise=True)
 
 
-	fw = tf.summary.FileWriter(logdir)
-	coord = tf.train.Coordinator()
+		with tf.variable_scope("DIS/"):
+			Discriminator = model.WaveNetModel(o.options["batch_size"],
+				dilations=o.options["dilations"],
+				filter_width=o.options["filter_width"],
+				residual_channels=o.options["residual_channels"],
+				dilation_channels=o.options["dilation_channels"],
+				skip_channels=o.options["skip_channels"],
+				quantization_channels=o.options["quantization_channels"],
+				use_biases=o.options["use_biases"],
+				scalar_input=o.options["scalar_input"],
+				initial_filter_width=o.options["initial_filter_width"],
+				global_condition_channels=None,
+				global_condition_cardinality=None,
+				histograms = True,
+				final_layer_size=o.options["final_layer_size"]) # Disc should output 1
+		# Audio dimensions: [Song, Samplenr, Quantization]
+		# Data loading
+		channels = o.options["quantization_channels"]
+		with tf.name_scope("Pre-processing"):
+			l = loader.AudioReader("maestro-v1.0.0/2017", o.options["sample_rate"], Discriminator.receptive_field, coord, stepSize=1, sampleSize=o.options["sample_size"])
+			abatch = l.deque(o.options["batch_size"])
+			mldequed = l.dequeMl(o.options["batch_size"])
+			# Quantize audio into channels
+			mldequed = ops.mu_law_encode(mldequed, channels)
+			mldequed = Generator._one_hot(mldequed)
+			mldequed = tf.reshape(tf.cast(mldequed, tf.float32), [o.options["batch_size"], -1, channels])
+			mltarget = tf.slice(mldequed,[0,Generator.receptive_field,0],[-1,-1,-1])
+			mlinput = tf.slice(mldequed,[0,0,0],[-1, tf.shape(mldequed)[1]-1, -1])
+			#Quantize encoded into channels
+			abatch = ops.mu_law_encode(abatch, channels)
+			encoded = Generator._one_hot(abatch)
+			#encoded = tf.reshape(tf.cast(abatch, tf.float32), [o.options["batch_size"], -1, channels])
 
-	with tf.variable_scope("GEN/"):
-		Generator = model.WaveNetModel(o.options["batch_size"],
-			dilations=o.options["dilations"],
-			filter_width=o.options["filter_width"],
-			residual_channels=o.options["residual_channels"],
-			dilation_channels=o.options["dilation_channels"],
-			skip_channels=o.options["skip_channels"],
-			quantization_channels=o.options["quantization_channels"],
-			use_biases=o.options["use_biases"],
-			scalar_input=o.options["scalar_input"],
-			initial_filter_width=o.options["initial_filter_width"],
-			#global_condition_channels=o.options["noise_dimensions"],
-			global_condition_cardinality=None,
-			histograms=True,
-			final_layer_size=o.options["quantization_channels"],#Generator should output quantization
-			add_noise=True) 
+			noise = l.dequeNoise(o.options["batch_size"])
 
+		# Generator stuff
+		with tf.variable_scope("GEN/", reuse=tf.AUTO_REUSE):
+			audio = encoded
+			#noise = Generator._embed_gc(codedNoise)
+			zeros = tf.zeros(tf.shape(noise),tf.float32)
+			one_step = Generator._create_network(audio, None, noise=noise)
+		with tf.variable_scope("GEN/", reuse=True):
+			ml_one_step = Generator._create_network(mlinput, None, noise=zeros) # Might be dragons
+			with tf.name_scope("Generating/"):
+				# Get sample by argmax for now
+				#gs = tf.gradients(one_step, audio)[0]
+				#print(np.shape(gs))
+				softies = tf.nn.softmax(one_step, axis=2)
+				#print(np.shape(arg_maxes))
+				#arg_maxes = tf.sign(tf.reduce_max(softies, axis=2, keepdims=True)-softies)
+				#arg_maxes = (arg_maxes-1)*(-1)
+				#print(np.shape(arg_maxes))
+				#newest_sample = softies[:,-1,:]
+				#Sample from newest_sample
 
-	with tf.variable_scope("DIS/"):
-		Discriminator = model.WaveNetModel(o.options["batch_size"],
-			dilations=o.options["dilations"],
-			filter_width=o.options["filter_width"],
-			residual_channels=o.options["residual_channels"],
-			dilation_channels=o.options["dilation_channels"],
-			skip_channels=o.options["skip_channels"],
-			quantization_channels=o.options["quantization_channels"],
-			use_biases=o.options["use_biases"],
-			scalar_input=o.options["scalar_input"],
-			initial_filter_width=o.options["initial_filter_width"],
-			global_condition_channels=None,
-			global_condition_cardinality=None,
-			histograms = True,
-			final_layer_size=o.options["final_layer_size"]) # Disc should output 1
-	# Audio dimensions: [Song, Samplenr, Quantization]
-	# Data loading
-	channels = o.options["quantization_channels"]
-	with tf.name_scope("Pre-processing"):
-		l = loader.AudioReader("maestro-v1.0.0/2017", o.options["sample_rate"], Discriminator.receptive_field, coord, stepSize=1, sampleSize=o.options["sample_size"])
-		abatch = l.deque(o.options["batch_size"])
-		mldequed = l.dequeMl(o.options["batch_size"])
-		# Quantize audio into channels
-		mldequed = ops.mu_law_encode(mldequed, channels)
-		mldequed = Generator._one_hot(mldequed)
-		mldequed = tf.reshape(tf.cast(mldequed, tf.float32), [o.options["batch_size"], -1, channels])
-		mltarget = tf.slice(mldequed,[0,Generator.receptive_field,0],[-1,-1,-1])
-		mlinput = tf.slice(mldequed,[0,0,0],[-1, tf.shape(mldequed)[1]-1, -1])
-		#Quantize encoded into channels
-		abatch = ops.mu_law_encode(abatch, channels)
-		encoded = Generator._one_hot(abatch)
-		#encoded = tf.reshape(tf.cast(abatch, tf.float32), [o.options["batch_size"], -1, channels])
+				scaled_prediction = tf.log(softies) / 0.9 #args.temperature
+				loged = tf.log(tf.reduce_sum(tf.exp(scaled_prediction), axis=2, keepdims = True))
+				#print(np.shape(loged))
+				scaled_prediction = (scaled_prediction - loged)
+				#print(np.shape(scaled_prediction))
+				#scaled_prediction = tf.exp(scaled_prediction)
+				mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [o.options["batch_size"], o.options["quantization_channels"]]), 1)
+				#print(np.shape(mask_indexes))
+				#mask_index = np.random.choice(
+				#		np.arange(o.options["quantization_channels"]), p=scaled_prediction)
+				
+				mask = Generator._one_hot(mask_indexes)
+				arg_maxes = tf.sign(softies * mask)
 
-		noise = l.dequeNoise(o.options["batch_size"])
+				#GS = tf.gradients(arg_maxes, softies)[0]
+				#print("GRADS")
+				#print(np.shape(GS))
+				#print(np.shape(arg_maxes))
+				#arg_maxes = tf.sign(arg_maxes )
+				#print(np.shape(arg_maxes))
+				#gs = tf.gradients(arg_maxes, audio)[0]
+				#print(np.shape(gs))
+				#one_step = Generator._one_hot(arg_maxes)
 
-	# Generator stuff
-	with tf.variable_scope("GEN/", reuse=tf.AUTO_REUSE):
-		audio = encoded
-		#noise = Generator._embed_gc(codedNoise)
-		zeros = tf.zeros(tf.shape(noise),tf.float32)
-		one_step = Generator._create_network(audio, None, noise=noise)
-	with tf.variable_scope("GEN/", reuse=True):
-		ml_one_step = Generator._create_network(mlinput, None, noise=zeros) # Might be dragons
-		with tf.name_scope("Generating/"):
-			# Get sample by argmax for now
-			#gs = tf.gradients(one_step, audio)[0]
-			#print(np.shape(gs))
-			arg_maxes = tf.nn.softmax(one_step, axis=2)
-			#print(np.shape(arg_maxes))
-			arg_maxes = tf.sign(tf.reduce_max(arg_maxes, axis=2, keepdims=True)-arg_maxes)
-			arg_maxes = (arg_maxes-1)*(-1)
-			#print(np.shape(arg_maxes))
-			#gs = tf.gradients(arg_maxes, audio)[0]
-			#print(np.shape(gs))
-			#one_step = Generator._one_hot(arg_maxes)
-			#print(np.shape(one_step))
-			# Shift the generated vector
-			fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), arg_maxes),1)
-			#print("fake sample")
-			#print(np.shape(fake_sample))
+				#print(np.shape(one_step))
+				# Shift the generated vector
+				fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), arg_maxes),1)
+				#print("fake sample")
+				#print(np.shape(fake_sample))
 
-	
-	# Discriminator stuff
-	with tf.variable_scope("DIS/", reuse=tf.AUTO_REUSE):
-		daudio = encoded
-		r_logits = Discriminator._create_network(daudio, None)
-		#r_logits = tf.layers.dense(r_logits,1, name="Final_Layer")
-		#r_logits = tf.layers.dense(real_output, 1, name="final_D")
-	with tf.variable_scope("DIS/", reuse=True):
-		f_logits = Discriminator._create_network(fake_sample, None)
-		#f_logits = tf.layers.dense(f_logits,1, name="Final_Layer")
-		#f_logits = tf.layers.dense(fake_output, 1, name="final_D")
-
-	# Get the variables
-	genVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="GEN/")
-	discVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DIS/")
-
-	with tf.name_scope("GP/"):
-		# GP
-		e = tf.random_uniform([o.options["batch_size"]],0,1) #WRONG
-		e = tf.reshape(e, (o.options["batch_size"],-1,1))
-		e = tf.tile(e, [1,tf.shape(daudio)[1],channels])
-		polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e))
-
-	with tf.variable_scope("DIS/", reuse=True):
-		discPolated = Discriminator._create_network(polated, None)
 		
-	with tf.name_scope("GP/"):
-		grads = tf.gradients(discPolated,polated)[0]
-		slope = tf.sqrt(tf.reduce_sum(tf.square(grads), reduction_indices=[1,2]))
-		nr = 10*tf.reduce_mean((slope-1)**2)
+		# Discriminator stuff
+		with tf.variable_scope("DIS/", reuse=tf.AUTO_REUSE):
+			daudio = encoded
+			r_logits = Discriminator._create_network(daudio, None)
+			#r_logits = tf.layers.dense(r_logits,1, name="Final_Layer")
+			#r_logits = tf.layers.dense(real_output, 1, name="final_D")
+		with tf.variable_scope("DIS/", reuse=True):
+			f_logits = Discriminator._create_network(fake_sample, None)
+			#f_logits = tf.layers.dense(f_logits,1, name="Final_Layer")
+			#f_logits = tf.layers.dense(fake_output, 1, name="final_D")
+
+		# Get the variables
+		genVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="GEN/")
+		discVars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="DIS/")
+
+		with tf.name_scope("GP/"):
+			# GP
+			e = tf.random_uniform([o.options["batch_size"]],0,1) #WRONG
+			e = tf.reshape(e, (o.options["batch_size"],-1,1))
+			e = tf.tile(e, [1,tf.shape(daudio)[1],channels])
+			polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e))
+
+		with tf.variable_scope("DIS/", reuse=True):
+			discPolated = Discriminator._create_network(polated, None)
+			
+		with tf.name_scope("GP/"):
+			grads = tf.gradients(discPolated,polated)[0]
+			slope = tf.sqrt(tf.reduce_sum(tf.square(grads), reduction_indices=[1,2]))
+			nr = 10*tf.reduce_mean((slope-1)**2)
 
 
-	with tf.name_scope("Loss/"):
-		discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits) + 10*tf.reduce_mean((slope-1)**2)
-		genLoss = -tf.reduce_mean(f_logits)
-		mlLoss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=ml_one_step, labels=mltarget))
+		with tf.name_scope("Loss/"):
+			discLoss = -tf.reduce_mean(r_logits) + tf.reduce_mean(f_logits) + 10*tf.reduce_mean((slope-1)**2)
+			genLoss = -tf.reduce_mean(f_logits)
+			mlLoss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=ml_one_step, labels=mltarget))
 
-	tf.summary.scalar('Discriminator Loss',discLoss)
-	tf.summary.scalar('Generator Loss', genLoss)
-	tf.summary.scalar('ML Loss', mlLoss)
+		tf.summary.scalar('Discriminator Loss',discLoss)
+		tf.summary.scalar('Generator Loss', genLoss)
+		tf.summary.scalar('ML Loss', mlLoss)
 
-	#gs = tf.gradients(f_logits, audio)[0]
-	#print(np.shape(gs))
-	#print(np.shape(f_logits))
-	#print(np.shape(r_logits))
+		#gs = tf.gradients(f_logits, audio)[0]
+		#print()
+		#print(np.shape(gs))
+		#print(np.shape(f_logits))
+		#print(np.shape(r_logits))
 
-	mlStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(mlLoss, var_list=genVars)
-	genStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
-	discStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(discLoss, var_list=discVars)
-	
-	graph = tf.get_default_graph()
-	fw.add_graph(graph)
+		mlStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(mlLoss, var_list=genVars)
+		genStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
+		discStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(discLoss, var_list=discVars)
+		
+		graph = tf.get_default_graph()
+		fw.add_graph(graph)
 
-	train(coord, Generator, Discriminator, l, fw)
+		train(coord, Generator, Discriminator, l, fw)
 
 
