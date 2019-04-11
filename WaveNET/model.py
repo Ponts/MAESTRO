@@ -334,7 +334,7 @@ class WaveNetModel(object):
         input_cut = tf.shape(input_batch)[1] - tf.shape(transformed)[1]
         input_batch = tf.slice(input_batch, [0, input_cut, 0], [-1, -1, -1])
 
-        return skip_contribution, input_batch + transformed
+        return skip_contribution, input_batch + transformed, out
 
     def _generator_conv(self, input_batch, state_batch, weights):
         '''Perform convolution for a single convolutional processing step.'''
@@ -393,6 +393,65 @@ class WaveNetModel(object):
 
         return skip_contribution, input_batch + transformed
 
+    # Name is dilated stack or postprocessing, index is between 0 and 49 for dilated stack
+    # 
+    def _get_layer_activation(self, name, index, input_batch, global_condition_batch, noise = None):
+        '''Construct the WaveNet network.'''
+        outputs = []
+        current_layer = input_batch
+        self.layer_names = ['dilated_stack', 'postprocessing']
+
+        # Pre-process the input with a regular convolution
+        current_layer = self._create_causal_layer(current_layer)
+
+        output_width = tf.shape(input_batch)[1] - self.receptive_field + 1
+
+        # Add all defined dilation layers.
+        with tf.name_scope('dilated_stack'):
+            for layer_index, dilation in enumerate(self.dilations):
+                with tf.name_scope('layer{}'.format(layer_index)):
+                    output, current_layer, out = self._create_dilation_layer(
+                        current_layer, layer_index, dilation,
+                        global_condition_batch, output_width)
+                    if name == 'dilated_stack' and index == layer_index:
+                        return out
+                    outputs.append(output)
+
+        with tf.name_scope('postprocessing'):
+            # Perform (+) -> ReLU -> 1x1 conv -> ReLU -> 1x1 conv to
+            # postprocess the output.
+            if self.add_noise:
+                n = self.variables['noise']['noise']
+
+            w1 = self.variables['postprocessing']['postprocess1']
+            w2 = self.variables['postprocessing']['postprocess2']
+            if self.use_biases:
+                b1 = self.variables['postprocessing']['postprocess1_bias']
+                b2 = self.variables['postprocessing']['postprocess2_bias']
+
+            # We skip connections from the outputs of each layer, adding them
+            # all up here.
+            if self.add_noise:
+                noised = tf.nn.conv1d(noise,n,stride=1, padding="SAME")
+                outputs.append(noised)
+
+            if name == 'postprocessing' and index < len(outputs) and index > 0: #Last index is noise features
+                return outputs[index]
+
+            total = sum(outputs) # Make noise vector one of these?
+            transformed1 = tf.nn.relu(total)
+
+            conv1 = tf.nn.conv1d(transformed1, w1, stride=1, padding="SAME")
+            if self.use_biases:
+                conv1 = tf.add(conv1, b1)
+            transformed2 = tf.nn.relu(conv1)
+            conv2 = tf.nn.conv1d(transformed2, w2, stride=1, padding="SAME")
+            if self.use_biases:
+                conv2 = tf.add(conv2, b2)
+
+        return None
+
+
     def _create_network(self, input_batch, global_condition_batch, noise = None):
         '''Construct the WaveNet network.'''
         outputs = []
@@ -407,7 +466,7 @@ class WaveNetModel(object):
         with tf.name_scope('dilated_stack'):
             for layer_index, dilation in enumerate(self.dilations):
                 with tf.name_scope('layer{}'.format(layer_index)):
-                    output, current_layer = self._create_dilation_layer(
+                    output, current_layer, _ = self._create_dilation_layer(
                         current_layer, layer_index, dilation,
                         global_condition_batch, output_width)
                     outputs.append(output)

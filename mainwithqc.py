@@ -9,9 +9,17 @@ from time import sleep
 import os, sys
 import librosa
 import time
+import argparse
 
 
 logdir = "./tfb_logs/"
+
+def get_arguments():
+	parser = argparse.ArgumentParser(description='WaveNet settings')
+	parser.add_argument('--logdir', type=str, default=logdir,
+		help='Which directory to save logs, restore model from, e.t.c.')
+
+	return parser.parse_args()
 
 def load(saver, sess, logDir):
 	print("Trying to restore saved checkpoints from {} ...".format(logDir),
@@ -64,6 +72,17 @@ def generate(length, conditionOn = None):
 			global_condition_cardinality=None,
 			histograms=True,
 			add_noise=True)
+	# Get the graph
+	variables_to_restore = {
+		var.name[:-2]: var for var in tf.global_variables()
+		if not ('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name}
+	#print(len(variables_to_restore))
+
+	saver = tf.train.Saver(variables_to_restore)
+	print("Restoring model")
+	ckpt = tf.train.get_checkpoint_state(logdir)
+	saver.restore(sess, ckpt.model_checkpoint_path)
+	print("Model {} restored".format(ckpt.model_checkpoint_path))
 
 	sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
 	noiseph = tf.placeholder(tf.float32, [1,1,o.options["noise_dimensions"]])
@@ -79,18 +98,6 @@ def generate(length, conditionOn = None):
 	#intermed = tf.sign(tf.reduce_max(arg_maxes, axis=2, keepdims=True)-arg_maxes)
 	#one_hot = (intermed-1)*(-1)
 	#fake_sample = tf.concat((tf.slice(encoded, [0,1,0], [-1,-1,-1]), appendph),1)
-
-	# Get the graph
-	variables_to_restore = {
-		var.name[:-2]: var for var in tf.global_variables()
-		if not ('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name}
-	#print(len(variables_to_restore))
-
-	saver = tf.train.Saver(variables_to_restore)
-	print("Restoring model")
-	ckpt = tf.train.get_checkpoint_state(logdir)
-	saver.restore(sess, ckpt.model_checkpoint_path)
-	print("Model {} restored".format(ckpt.model_checkpoint_path))
 
 	generated = []
 	if conditionOn is not None:
@@ -123,7 +130,7 @@ def generate(length, conditionOn = None):
 		#Sample from newest_sample
 
 		np.seterr(divide='ignore')
-		scaled_prediction = np.log(newest_sample) / 0.99#args.temperature
+		scaled_prediction = np.log(newest_sample) / 0.9#args.temperature
 		scaled_prediction = (scaled_prediction -
 							np.logaddexp.reduce(scaled_prediction))
 		scaled_prediction = np.exp(scaled_prediction)
@@ -142,25 +149,102 @@ def generate(length, conditionOn = None):
 	generated=np.reshape(generated,[-1])
 	decoded = sess.run(ops.mu_law_decode(generated, o.options["quantization_channels"]))
 	generated = np.array(decoded)
-
 	librosa.output.write_wav("Generated/gangen.wav", generated, sr, norm=True)
 
+	# Name is dilated stack or postprocessing, index is between 0 and 49 for dilated stack
+	# 0 and 50 for dilated stack
+def feature_max(layerName, layerIndex):
+	sess = tf.Session()
+	sr = o.options["sample_rate"]
+
+	with tf.variable_scope("GEN/"):
+		Generator = model.WaveNetModel(1,
+			dilations=o.options["dilations"],
+			filter_width=o.options["filter_width"],
+			residual_channels=o.options["residual_channels"],
+			dilation_channels=o.options["dilation_channels"],
+			skip_channels=o.options["skip_channels"],
+			quantization_channels=o.options["quantization_channels"],
+			use_biases=o.options["use_biases"],
+			scalar_input=o.options["scalar_input"],
+			initial_filter_width=o.options["initial_filter_width"],
+			#global_condition_channels=o.options["noise_dimensions"],
+			global_condition_cardinality=None,
+			histograms=True,
+			add_noise=True)
+	variables_to_restore = {
+		var.name[:-2]: var for var in tf.global_variables()
+		if not ('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name}
+	#print(len(variables_to_restore))
+
+	saver = tf.train.Saver(variables_to_restore)
+	print("Restoring model")
+	ckpt = tf.train.get_checkpoint_state(logdir)
+	saver.restore(sess, ckpt.model_checkpoint_path)
+	print("Model {} restored".format(ckpt.model_checkpoint_path))
+
+	sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
+	zeros = np.zeros((1,1,o.options["noise_dimensions"]))
+	encoded = ops.mu_law_encode(sampleph, o.options["quantization_channels"])
+
+
+	one_hot = Generator._one_hot(encoded)
+	to_optimise = Generator._get_layer_activation(layerName, layerIndex, one_hot, None, noise = zeros)
+	gs = tf.gradients(to_optimise, one_hot)[0]
 	
-def feature_max(G, layerName):
-	conf = tf.ConfigProto(log_device_placement=False)
-	sess = tf.Session(config=conf)
-	init = tf.global_variables_initializer()
-	sess.run(init)
-	saver = tf.train.Saver(var_list=tf.trainable_variables(), max_to_keep=5)
-	try:
-		last_global_step = load(saver, sess, logdir)
-		if last_global_step is not None:
-			print("Restored model")
-	except:
-		print("Error in restoring model, terminating")
-		raise
+	#randoms = np.random.randint(0, o.options["quantization_channels"], size= (1,Generator.receptive_field)) # Start with random noise
+	prob_dist = np.ones((1,Generator.receptive_field, o.options["quantization_channels"])) / (o.options["quantization_channels"])
+	length = 1000
+	bar = progressbar.ProgressBar(maxval=length, \
+		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+	bar.start()
+
+	for i in range(length):
+		#inp = sampleFrom(prob_dist)
+		grads = sess.run(gs, feed_dict = {one_hot : prob_dist})
+		prob_dist += 0.01*grads
+		#prob_dist = softmax(prob_dist)
+		#prob_dist = prob_dist - np.min(prob_dist, axis=2, keepdims=True)
+		#prob_dist /= np.sum(prob_dist, axis=2, keepdims=True)
+		#print(np.shape(prob_dist))
+		bar.update(i+1)
+	bar.finish()
 	
-	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+	print(prob_dist)
+	prob_dist = softmax(prob_dist)
+	max_path = np.reshape(np.argmax(prob_dist, axis=2),[-1])
+	#generated = np.argmax(sampleFrom(prob_dist),axis=2)
+	#print(np.shape(generated))
+	#generated=np.reshape(generated,[-1])
+	#decoded = sess.run(ops.mu_law_decode(generated, o.options["quantization_channels"]))
+	#generated = np.array(decoded)
+	import matplotlib.pyplot as plt
+	plt.imshow(np.reshape(prob_dist,( o.options["quantization_channels"],Generator.receptive_field)))
+	plt.show()
+	plt.plot(max_path)
+	plt.show()
+
+
+	#librosa.output.write_wav("Generated/visualize"+layerName + str(layerIndex)+".wav", generated, sr, norm=True)
+
+	
+def sampleFrom(prob_dist):
+	length = np.shape(prob_dist)[1]
+	inp = np.zeros((1, length, o.options["quantization_channels"]))
+	for i in range(length):
+		sample = np.random.choice(
+			np.arange(o.options["quantization_channels"]), p=prob_dist[0,i,:])
+		#one = np.zeros((o.options["quantization_channels"]))
+		#one[sample] = 1.0
+		inp[0,i,sample] = 1.0
+	return inp
+
+
+def softmax(x, ax=2):
+	ex = np.exp(x)
+	return ex / np.sum(ex, axis=ax, keepdims=True)
+
+
 
 
 
@@ -201,7 +285,7 @@ def train(coord, G, D, loader, fw):
 		step = 0
 	try:			   
 		for j in range(1000000):
-			if step < 500000: # Do Non-gan init training
+			if step < 600000: # Do Non-gan init training
 				startTime = time.time()
 				_, lossMl = sess.run([mlStep, mlLoss])
 				if step % 10000 == 0 and step > 10000:
@@ -277,11 +361,18 @@ def train(coord, G, D, loader, fw):
 			coord.join(threads)
 	
 
+
 if __name__ == "__main__":
-	doGen = True
-	if doGen:
-		generate(16000, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav")
-	else:
+	args = get_arguments()
+	logdir = args.logdir
+	modes = ["Generate", "FeatureVis", "Train"]
+	mode = modes[0]
+
+	if mode == modes[0]:
+		generate(16000*3, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+	elif mode == modes[1]:
+		feature_max('dilated_stack', 25)
+	elif mode == modes[2]:
 		fw = tf.summary.FileWriter(logdir)
 		coord = tf.train.Coordinator()
 

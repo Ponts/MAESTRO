@@ -180,8 +180,9 @@ class Visualizer():
 if __name__ == "__main__":
 	vis = Visualizer(2**16)
 	#vis.visAudio("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--2.wav", dynamicSl = True, time = 0.02)
-	vis.visAudio("D:\\MAESTRO\\Generated\\gangen.wav", dynamicSl = True, time=0.02)
-	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
+	#vis.visAudio("D:\\MAESTRO\\Generated\\gangen.wav", dynamicSl = True, time=0.02)
+	#vis.visAudio("D:\\MAESTRO\\Generated\\visualizedilated_stack5.wav", dynamicSl = True, time=0.02)
+	vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
 	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
 	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
 
