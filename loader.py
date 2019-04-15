@@ -68,7 +68,7 @@ class AudioReader():
 			audio = audio.reshape(-1,1)	
 			yield audio, filename
 
-	def trimSilence(self, audio, frame_length=2048):
+	def trimSilence(self, audio, threshold, frame_length=2048):
 		if audio.size < frame_length:
 			frame_length = audio.size
 		energy = librosa.feature.rmse(audio, frame_length=frame_length)
@@ -88,6 +88,7 @@ class AudioReader():
 				if self.coord.should_stop():
 					stop = True
 					break
+				print(np.shape(audio))
 				if self.silenceThreshold is not None:
 					audio = self.trimSilence(audio[:, 0], self.silenceThreshold)
 					audio = audio.reshape(-1, 1)

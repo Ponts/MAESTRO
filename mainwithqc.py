@@ -153,7 +153,7 @@ def generate(length, conditionOn = None):
 
 	# Name is dilated stack or postprocessing, index is between 0 and 49 for dilated stack
 	# 0 and 50 for dilated stack
-def feature_max(layerName, layerIndex):
+def feature_max(layerName, layerIndex, unit_index = None):
 	sess = tf.Session()
 	sr = o.options["sample_rate"]
 
@@ -190,10 +190,14 @@ def feature_max(layerName, layerIndex):
 
 	one_hot = Generator._one_hot(encoded)
 	to_optimise = Generator._get_layer_activation(layerName, layerIndex, one_hot, None, noise = zeros)
+	if unit_index is not None and unit_index < np.shape(to_optimise)[2]:
+		to_optimise = to_optimise[:,:,unit_index];
+		print(np.shape(to_optimise))
 	gs = tf.gradients(to_optimise, one_hot)[0]
 	
-	#randoms = np.random.randint(0, o.options["quantization_channels"], size= (1,Generator.receptive_field)) # Start with random noise
-	prob_dist = np.ones((1,Generator.receptive_field, o.options["quantization_channels"])) / (o.options["quantization_channels"])
+	#prob_dist = np.random.randint(0, o.options["quantization_channels"], size= (1,Generator.receptive_field)) # Start with random noise
+	#prob_dist = np.ones((1,Generator.receptive_field, o.options["quantization_channels"])) / (o.options["quantization_channels"])
+	prob_dist = softmax(np.random.random_sample((1, Generator.receptive_field, o.options["quantization_channels"])))
 	length = 1000
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
@@ -202,8 +206,9 @@ def feature_max(layerName, layerIndex):
 	for i in range(length):
 		#inp = sampleFrom(prob_dist)
 		grads = sess.run(gs, feed_dict = {one_hot : prob_dist})
+		#print(np.shape(grads))
 		prob_dist += 0.01*grads
-		#prob_dist = softmax(prob_dist)
+		prob_dist = softmax(prob_dist)
 		#prob_dist = prob_dist - np.min(prob_dist, axis=2, keepdims=True)
 		#prob_dist /= np.sum(prob_dist, axis=2, keepdims=True)
 		#print(np.shape(prob_dist))
@@ -220,12 +225,15 @@ def feature_max(layerName, layerIndex):
 	#generated = np.array(decoded)
 	import matplotlib.pyplot as plt
 	plt.imshow(np.reshape(prob_dist,( o.options["quantization_channels"],Generator.receptive_field)))
-	plt.show()
-	plt.plot(max_path)
+	title = layerName + ", layer: " + str(layerIndex) 
+	if unit_index is not None:
+		title += ", channel : " +str(unit_index)
+	plt.title(title)
 	plt.show()
 
 
-	#librosa.output.write_wav("Generated/visualize"+layerName + str(layerIndex)+".wav", generated, sr, norm=True)
+
+	#librosa.output.write_wav("Generated/visualize"+layerName + str(layerIndex)+".wav", np.array([float(x) for x in max_path]), sr, norm=True)
 
 	
 def sampleFrom(prob_dist):
@@ -284,8 +292,8 @@ def train(coord, G, D, loader, fw):
 		last_saved_step = 0
 		step = 0
 	try:			   
-		for j in range(1000000):
-			if step < 600000: # Do Non-gan init training
+		for j in range(2000000):
+			if step < 1200000: # Do pretraining training
 				startTime = time.time()
 				_, lossMl = sess.run([mlStep, mlLoss])
 				if step % 10000 == 0 and step > 10000:
@@ -369,9 +377,9 @@ if __name__ == "__main__":
 	mode = modes[0]
 
 	if mode == modes[0]:
-		generate(16000*3, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+		generate(16000*2, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[1]:
-		feature_max('dilated_stack', 25)
+		feature_max('postprocessing', 0, None)
 	elif mode == modes[2]:
 		fw = tf.summary.FileWriter(logdir)
 		coord = tf.train.Coordinator()
@@ -413,7 +421,7 @@ if __name__ == "__main__":
 		# Data loading
 		channels = o.options["quantization_channels"]
 		with tf.name_scope("Pre-processing"):
-			l = loader.AudioReader("maestro-v1.0.0/2017", o.options["sample_rate"], Discriminator.receptive_field, coord, stepSize=1, sampleSize=o.options["sample_size"])
+			l = loader.AudioReader("maestro-v1.0.0/2017", o.options["sample_rate"], Discriminator.receptive_field, coord, stepSize=1, sampleSize=o.options["sample_size"], silenceThreshold=0.1)
 			abatch = l.deque(o.options["batch_size"])
 			mldequed = l.dequeMl(o.options["batch_size"])
 			# Quantize audio into channels
@@ -526,9 +534,9 @@ if __name__ == "__main__":
 		#print(np.shape(f_logits))
 		#print(np.shape(r_logits))
 
-		mlStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(mlLoss, var_list=genVars)
-		genStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
-		discStep = tf.train.AdamOptimizer(learning_rate=0.0005, beta1=0, beta2=0.9).minimize(discLoss, var_list=discVars)
+		mlStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(mlLoss, var_list=genVars)
+		genStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(genLoss, var_list=genVars)
+		discStep = tf.train.AdamOptimizer(learning_rate=0.00005, beta1=0, beta2=0.9).minimize(discLoss, var_list=discVars)
 		
 		graph = tf.get_default_graph()
 		fw.add_graph(graph)
