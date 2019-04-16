@@ -33,7 +33,6 @@ class AudioReader():
 		self.mlQue = tf.PaddingFIFOQueue(self.queueSize*2, ['float32'], shapes=[(None,1)], name="ML_QUE")
 		self.mlEnque = self.mlQue.enqueue([self.mlHolder])
 
-		self.mlDone = False
 
 
 	def randomFiles(self, files):
@@ -131,7 +130,7 @@ class AudioReader():
 			iterator = self.loadAudio(self.dir, sar=self.sampleRate)
 
 			for audio, filename in iterator:
-				if self.coord.should_stop() or self.mlDone:
+				if self.coord.should_stop():
 					stop = True
 					sess.run(self.mlQue.close())
 					break

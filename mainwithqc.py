@@ -293,7 +293,7 @@ def train(coord, G, D, loader, fw):
 		step = 0
 	try:			   
 		for j in range(2000000):
-			if step < 1200000: # Do pretraining training
+			if step < 900000: # Do pretraining training
 				startTime = time.time()
 				_, lossMl = sess.run([mlStep, mlLoss])
 				if step % 10000 == 0 and step > 10000:
@@ -316,8 +316,6 @@ def train(coord, G, D, loader, fw):
 				
 			else: # Do gan-training
 				#save(saver, sess, logdir, step)
-				return #FOR NOW
-				loader.mlDone = True
 
 				# Train D 5 times	
 				for i in range(5):
@@ -339,14 +337,15 @@ def train(coord, G, D, loader, fw):
 
 				# Train G 1 time
 				#_, dLoss, gLoss = sess.run([genStep, discLoss, genLoss], feed_dict={audio : init_audio, codedNoise : init_noise, daudio : init_audio})
-				fakey = sess.run(audio)
-				init_noise = sess.run(noise)
+				#fakey = sess.run(audio)
+				#init_noise = sess.run(noise)
 				#for k in range(recField):
-				fakey = sess.run(fake_sample, feed_dict={audio : fakey, noise : init_noise})
-				_, dLoss, gLoss, slopeLoss, gradsLoss = sess.run([genStep, discLoss, genLoss, nr, slope], feed_dict={fake_sample : fakey, noise : init_noise})
+				#fakey = sess.run(fake_sample, feed_dict={audio : fakey, noise : init_noise})
+				#_, dLoss, gLoss, slopeLoss, gradsLoss = sess.run([genStep, discLoss, genLoss, nr, slope], feed_dict={fake_sample : fakey, noise : init_noise})
+				_, dLoss, gLoss = sess.run([genStep, discLoss, genLoss])
 				print("DiscLoss:  " + str(dLoss))
-				print("SlopeLoss: " + str(slopeLoss))
-				print("GradsLoss: " + str(gradsLoss))
+				#print("SlopeLoss: " + str(slopeLoss))
+				#print("GradsLoss: " + str(gradsLoss))
 				print("GenLoss:   " + str(gLoss) + ", Step: " + str(step))
 				print()
 			step += 1
@@ -374,7 +373,7 @@ if __name__ == "__main__":
 	args = get_arguments()
 	logdir = args.logdir
 	modes = ["Generate", "FeatureVis", "Train"]
-	mode = modes[0]
+	mode = modes[2]
 
 	if mode == modes[0]:
 		generate(16000*2, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
