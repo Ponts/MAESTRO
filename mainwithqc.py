@@ -1,6 +1,7 @@
 import tensorflow as tf
 from WaveNET import model as model
-import optionswithqc as o
+import genoptions as g
+import discoptions as d
 import loader
 import numpy as np
 from WaveNET import ops 
@@ -10,9 +11,11 @@ import os, sys
 import librosa
 import time
 import argparse
+import matplotlib.pyplot as plt
 
 
 logdir = "./tfb_logs/"
+ablatelogs = "./ablate_logs"
 
 def get_arguments():
 	parser = argparse.ArgumentParser(description='WaveNet settings')
@@ -20,6 +23,20 @@ def get_arguments():
 		help='Which directory to save logs, restore model from, e.t.c.')
 
 	return parser.parse_args()
+
+def optimistic_restore(session, save_file, graph=tf.get_default_graph()):
+	reader = tf.train.NewCheckpointReader(save_file)
+	saved_shapes = reader.get_variable_to_shape_map()
+	var_names = sorted([(var.name, var.name.split(':')[0]) for var in tf.global_variables()
+				if var.name.split(':')[0] in saved_shapes])    
+	restore_vars = []
+	for var_name, saved_var_name in var_names:
+		curr_var = graph.get_tensor_by_name(var_name)
+		var_shape = curr_var.get_shape().as_list()
+		if var_shape == saved_shapes[saved_var_name]:
+			restore_vars.append(curr_var)
+	opt_saver = tf.train.Saver(restore_vars)
+	opt_saver.restore(session, save_file)
 
 def load(saver, sess, logDir):
 	print("Trying to restore saved checkpoints from {} ...".format(logDir),
@@ -55,20 +72,20 @@ def save(saver, sess, logdir, step):
 def generate(length, conditionOn = None):
 	filename="generated"
 	sess = tf.Session()
-	sr = o.options["sample_rate"]
+	sr = g.options["sample_rate"]
 
 	with tf.variable_scope("GEN/"):
 		Generator = model.WaveNetModel(1,
-			dilations=o.options["dilations"],
-			filter_width=o.options["filter_width"],
-			residual_channels=o.options["residual_channels"],
-			dilation_channels=o.options["dilation_channels"],
-			skip_channels=o.options["skip_channels"],
-			quantization_channels=o.options["quantization_channels"],
-			use_biases=o.options["use_biases"],
-			scalar_input=o.options["scalar_input"],
-			initial_filter_width=o.options["initial_filter_width"],
-			#global_condition_channels=o.options["noise_dimensions"],
+			dilations=g.options["dilations"],
+			filter_width=g.options["filter_width"],
+			residual_channels=g.options["residual_channels"],
+			dilation_channels=g.options["dilation_channels"],
+			skip_channels=g.options["skip_channels"],
+			quantization_channels=g.options["quantization_channels"],
+			use_biases=g.options["use_biases"],
+			scalar_input=g.options["scalar_input"],
+			initial_filter_width=g.options["initial_filter_width"],
+			#global_condition_channels=g.options["noise_dimensions"],
 			global_condition_cardinality=None,
 			histograms=True,
 			add_noise=True)
@@ -85,14 +102,14 @@ def generate(length, conditionOn = None):
 	print("Model {} restored".format(ckpt.model_checkpoint_path))
 
 	sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
-	noiseph = tf.placeholder(tf.float32, [1,1,o.options["noise_dimensions"]])
-	encoded = ops.mu_law_encode(sampleph, o.options["quantization_channels"])
+	noiseph = tf.placeholder(tf.float32, [1,1,g.options["noise_dimensions"]])
+	encoded = ops.mu_law_encode(sampleph, g.options["quantization_channels"])
 	sample = tf.placeholder(tf.float32)
 
 	one_hot = Generator._one_hot(encoded)
 	next_sample = Generator._create_network(one_hot, None, noise = noiseph)
 	arg_maxes = tf.nn.softmax(next_sample, axis=2)
-	decoded = ops.mu_law_decode(sample, o.options["quantization_channels"])
+	decoded = ops.mu_law_decode(sample, g.options["quantization_channels"])
 	#print(np.shape(arg_maxes))
 	# Sampling with argmax atm
 	#intermed = tf.sign(tf.reduce_max(arg_maxes, axis=2, keepdims=True)-arg_maxes)
@@ -101,7 +118,7 @@ def generate(length, conditionOn = None):
 
 	generated = []
 	if conditionOn is not None:
-		audio, sr = librosa.load(conditionOn, o.options["sample_rate"], mono=True)
+		audio, sr = librosa.load(conditionOn, g.options["sample_rate"], mono=True)
 		start = np.random.randint(0,len(audio)-Generator.receptive_field)
 		fakey = audio[start:start+Generator.receptive_field]
 		audio_start = fakey
@@ -111,7 +128,7 @@ def generate(length, conditionOn = None):
 		fakey = [0.0] * (Generator.receptive_field-1)
 		fakey.append(np.random.uniform())
 		audio_start=[]
-	noise = np.random.normal(o.options["noise_mean"], o.options["noise_variance"], size=o.options["noise_dimensions"]).reshape(1,1,-1)
+	noise = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
 
 	# REMOVE THIS LATER
 	noise = np.zeros((1,1,100))
@@ -119,6 +136,7 @@ def generate(length, conditionOn = None):
 	gen = sess.run(encoded, feed_dict={sampleph : fakey})
 	generated = gen#[0,:,0].tolist()
 	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
+	print(np.shape(generated))
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 	bar.start()
@@ -139,15 +157,15 @@ def generate(length, conditionOn = None):
 		# scaling.
 		#print(np.argmax(scaled_prediction))
 		sample = np.random.choice(
-			np.arange(o.options["quantization_channels"]), p=scaled_prediction)
-		#sample = np.argmax(scaled_prediction)
+			np.arange(g.options["quantization_channels"]), p=scaled_prediction)
+		sample = np.argmax(scaled_prediction)
 		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
 		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
 		bar.update(i+1)
 
 	bar.finish()
 	generated=np.reshape(generated,[-1])
-	decoded = sess.run(ops.mu_law_decode(generated, o.options["quantization_channels"]))
+	decoded = sess.run(ops.mu_law_decode(generated, g.options["quantization_channels"]))
 	generated = np.array(decoded)
 	librosa.output.write_wav("Generated/gangen.wav", generated, sr, norm=True)
 
@@ -155,20 +173,20 @@ def generate(length, conditionOn = None):
 	# 0 and 50 for dilated stack
 def feature_max(layerName, layerIndex, unit_index = None):
 	sess = tf.Session()
-	sr = o.options["sample_rate"]
+	sr = g.options["sample_rate"]
 
 	with tf.variable_scope("GEN/"):
 		Generator = model.WaveNetModel(1,
-			dilations=o.options["dilations"],
-			filter_width=o.options["filter_width"],
-			residual_channels=o.options["residual_channels"],
-			dilation_channels=o.options["dilation_channels"],
-			skip_channels=o.options["skip_channels"],
-			quantization_channels=o.options["quantization_channels"],
-			use_biases=o.options["use_biases"],
-			scalar_input=o.options["scalar_input"],
-			initial_filter_width=o.options["initial_filter_width"],
-			#global_condition_channels=o.options["noise_dimensions"],
+			dilations=g.options["dilations"],
+			filter_width=g.options["filter_width"],
+			residual_channels=g.options["residual_channels"],
+			dilation_channels=g.options["dilation_channels"],
+			skip_channels=g.options["skip_channels"],
+			quantization_channels=g.options["quantization_channels"],
+			use_biases=g.options["use_biases"],
+			scalar_input=g.options["scalar_input"],
+			initial_filter_width=g.options["initial_filter_width"],
+			#global_condition_channels=g.options["noise_dimensions"],
 			global_condition_cardinality=None,
 			histograms=True,
 			add_noise=True)
@@ -184,8 +202,8 @@ def feature_max(layerName, layerIndex, unit_index = None):
 	print("Model {} restored".format(ckpt.model_checkpoint_path))
 
 	sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
-	zeros = np.zeros((1,1,o.options["noise_dimensions"]))
-	encoded = ops.mu_law_encode(sampleph, o.options["quantization_channels"])
+	zeros = np.zeros((1,1,g.options["noise_dimensions"]))
+	encoded = ops.mu_law_encode(sampleph, g.options["quantization_channels"])
 
 
 	one_hot = Generator._one_hot(encoded)
@@ -195,9 +213,9 @@ def feature_max(layerName, layerIndex, unit_index = None):
 		print(np.shape(to_optimise))
 	gs = tf.gradients(to_optimise, one_hot)[0]
 	
-	#prob_dist = np.random.randint(0, o.options["quantization_channels"], size= (1,Generator.receptive_field)) # Start with random noise
-	#prob_dist = np.ones((1,Generator.receptive_field, o.options["quantization_channels"])) / (o.options["quantization_channels"])
-	prob_dist = softmax(np.random.random_sample((1, Generator.receptive_field, o.options["quantization_channels"])))
+	#prob_dist = np.random.randint(0, g.options["quantization_channels"], size= (1,Generator.receptive_field)) # Start with random noise
+	#prob_dist = np.ones((1,Generator.receptive_field, g.options["quantization_channels"])) / (g.options["quantization_channels"])
+	prob_dist = softmax(np.random.random_sample((1, Generator.receptive_field, g.options["quantization_channels"])))
 	length = 1000
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
@@ -221,10 +239,10 @@ def feature_max(layerName, layerIndex, unit_index = None):
 	#generated = np.argmax(sampleFrom(prob_dist),axis=2)
 	#print(np.shape(generated))
 	#generated=np.reshape(generated,[-1])
-	#decoded = sess.run(ops.mu_law_decode(generated, o.options["quantization_channels"]))
+	#decoded = sess.run(ops.mu_law_decode(generated, g.options["quantization_channels"]))
 	#generated = np.array(decoded)
 	import matplotlib.pyplot as plt
-	plt.imshow(np.reshape(prob_dist,( o.options["quantization_channels"],Generator.receptive_field)))
+	plt.imshow(np.reshape(prob_dist,( g.options["quantization_channels"],Generator.receptive_field)))
 	title = layerName + ", layer: " + str(layerIndex) 
 	if unit_index is not None:
 		title += ", channel : " +str(unit_index)
@@ -238,11 +256,11 @@ def feature_max(layerName, layerIndex, unit_index = None):
 	
 def sampleFrom(prob_dist):
 	length = np.shape(prob_dist)[1]
-	inp = np.zeros((1, length, o.options["quantization_channels"]))
+	inp = np.zeros((1, length, g.options["quantization_channels"]))
 	for i in range(length):
 		sample = np.random.choice(
-			np.arange(o.options["quantization_channels"]), p=prob_dist[0,i,:])
-		#one = np.zeros((o.options["quantization_channels"]))
+			np.arange(g.options["quantization_channels"]), p=prob_dist[0,i,:])
+		#one = np.zeros((g.options["quantization_channels"]))
 		#one[sample] = 1.0
 		inp[0,i,sample] = 1.0
 	return inp
@@ -251,6 +269,117 @@ def sampleFrom(prob_dist):
 def softmax(x, ax=2):
 	ex = np.exp(x)
 	return ex / np.sum(ex, axis=ax, keepdims=True)
+
+
+def ablate(layerNames, layerIndexes):
+	ablations = {}
+	means = {}
+	variations = {}
+	counters = {}
+	sum2 = {}
+	coord = tf.train.Coordinator()
+	sess = tf.Session()
+	sr = g.options["sample_rate"]
+
+	with tf.variable_scope("GEN/"):
+		Generator = model.WaveNetModel(g.options["batch_size"],
+			dilations=g.options["dilations"],
+			filter_width=g.options["filter_width"],
+			residual_channels=g.options["residual_channels"],
+			dilation_channels=g.options["dilation_channels"],
+			skip_channels=g.options["skip_channels"],
+			quantization_channels=g.options["quantization_channels"],
+			use_biases=g.options["use_biases"],
+			scalar_input=g.options["scalar_input"],
+			initial_filter_width=g.options["initial_filter_width"],
+			global_condition_cardinality=None,
+			histograms=False,
+			add_noise=True)
+	variables_to_restore = {
+		var.name[:-2]: var for var in tf.global_variables()
+		if not (('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name) }
+	
+	#print(len(variables_to_restore))
+	# Data reading
+	l = loader.AudioReader("maestro-v1.0.0/2017", g.options["sample_rate"], Generator.receptive_field, coord, stepSize=1, sampleSize=g.options["sample_size"], silenceThreshold=0.1)
+	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+	l.startThreads(sess)
+
+	saver = tf.train.Saver(variables_to_restore)
+	print("Restoring model")
+	ckpt = tf.train.get_checkpoint_state(logdir)
+	saver.restore(sess, ckpt.model_checkpoint_path)
+	print("Model {} restored".format(ckpt.model_checkpoint_path))
+
+	#sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
+	deque = l.deque(g.options["batch_size"])
+	zeros = np.zeros((1,1,g.options["noise_dimensions"]))
+	encoded = ops.mu_law_encode(deque, g.options["quantization_channels"])
+	one_hot = Generator._one_hot(encoded)
+
+	to_save = {}
+	# Create dicts
+	for name in layerNames:
+		ablations[name] = {}
+		means[name] = {}
+		variations[name] = {}
+		counters[name] = {}
+		sum2[name] = {}
+		for i in layerIndexes:
+			ablations[name][i] = tf.reduce_mean(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), axis=[0,1]) 
+			s2 = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/zero_"+name+str(i))
+			sum2[name][i] = s2.assign_add(ablations[name][i]**2)
+			to_save["ABL/zero_"+name+str(i)] = s2
+
+			c = tf.Variable(0,name="ABL/counter_"+name+str(i),dtype=tf.float32)
+			counters[name][i] = c.assign_add(1)
+			to_save["ABL/counter_"+name+str(i)] = c
+
+			m = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/mean_"+name+str(i))
+			means[name][i] = m.assign(((m * c) + ablations[name][i] ) / (c+1))
+			to_save["ABL/mean_"+name+str(i)] = m
+
+			v = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/var_"+name+str(i))
+			variations[name][i] = v.assign(tf.sqrt((s2 / (c) ) - (m**2)))
+			to_save["ABL/var_"+name+str(i)] = v
+
+
+
+	sess.run(tf.global_variables_initializer())
+	print("Dict created")
+	print("Restoring previous statistics")
+	ablatesaver = tf.train.Saver(to_save)
+	ablateckpt = tf.train.get_checkpoint_state(ablatelogs)
+	if ablateckpt is not None:
+		optimistic_restore(sess, ablateckpt.model_checkpoint_path, tf.get_default_graph())
+	print("Statistics restored")
+
+	ms = []
+	# Gather statistics
+	for k in range(300):
+		for name in layerNames:
+			for i in layerIndexes:
+				print(k)
+				sess.run(sum2[name][i])
+				ms.append(sess.run(means[name][i])[0])
+				sess.run(variations[name][i])
+				c = sess.run(counters[name][i])
+
+
+	#mean = sess.run(means['dilated_stack'][3])
+	#print(np.shape(mean))
+
+	plt.plot(ms)
+	plt.show()
+
+	model_name = 'ablate.ckpt'
+	checkpoint_path = os.path.join(ablatelogs, model_name)
+	ablatesaver.save(sess, checkpoint_path)
+
+	coord.request_stop()
+	coord.join(threads)
+
+
 
 
 
@@ -282,21 +411,24 @@ def train(coord, G, D, loader, fw):
 	samples = []
 	recField = D.receptive_field
 	print("Receptive field: " + str(recField))
-	#sample = sess.run(loader.deque(o.options["batch_size"]))
-	#print(loader.deque(o.options["batch_size"]))
+	#sample = sess.run(loader.deque(g.options["batch_size"]))
+	#print(loader.deque(g.options["batch_size"]))
 	#for i in range(recField):
 	#sam = sess.run(fake_sample)
 	step = last_global_step
 	last_saved_step = last_global_step
+	genPretrainingSteps = 1600000
+	discPretrainingSteps = 20000
 	if last_saved_step is None:
 		last_saved_step = 0
 		step = 0
 	try:			   
 		for j in range(2000000):
-			if step < 900000: # Do pretraining training
+			if step < genPretrainingSteps: # Do pretraining training
 				startTime = time.time()
 				_, lossMl = sess.run([mlStep, mlLoss])
-				if step % 10000 == 0 and step > 10000:
+				'''
+				if step % 10000 == 0: and step > 10000:
 					init_noise = sess.run(noise)
 					init_audio = sess.run(audio)
 					bar = progressbar.ProgressBar(maxval=recField, \
@@ -311,11 +443,19 @@ def train(coord, G, D, loader, fw):
 					#_, dLoss = sess.run([discStep, discLoss])
 					#base, gen, target = sess.run([mldequed, ml_one_step, mltarget])
 					print("Disc Loss : " + str(dLoss))
+				'''
 				dur = time.time() - startTime
 				print("MLLoss GEN: " + str(lossMl) + ", step: " + str(step) + ", {:.3f} secs".format(dur))
+			elif step < genPretrainingSteps + discPretrainingSteps:
+				startTime = time.time()
+				_, dLoss = sess.run([discStep, discLoss]); 
+				dur = time.time() - startTime
+				print("Disc pre Loss :  " + str(dLoss) + ", Time: " + str(dur))
 				
 			else: # Do gan-training
-				#save(saver, sess, logdir, step)
+				save(saver, sess, logdir, step)
+				return
+				startTime = time.time()
 
 				# Train D 5 times	
 				for i in range(5):
@@ -343,10 +483,11 @@ def train(coord, G, D, loader, fw):
 				#fakey = sess.run(fake_sample, feed_dict={audio : fakey, noise : init_noise})
 				#_, dLoss, gLoss, slopeLoss, gradsLoss = sess.run([genStep, discLoss, genLoss, nr, slope], feed_dict={fake_sample : fakey, noise : init_noise})
 				_, dLoss, gLoss = sess.run([genStep, discLoss, genLoss])
+				dur = time.time() - startTime
 				print("DiscLoss:  " + str(dLoss))
 				#print("SlopeLoss: " + str(slopeLoss))
 				#print("GradsLoss: " + str(gradsLoss))
-				print("GenLoss:   " + str(gLoss) + ", Step: " + str(step))
+				print("GenLoss:   " + str(gLoss) + ", Step: " + str(step) + ", Time: " + str(dur))
 				print()
 			step += 1
 			if step % 100 == 0:
@@ -372,69 +513,71 @@ def train(coord, G, D, loader, fw):
 if __name__ == "__main__":
 	args = get_arguments()
 	logdir = args.logdir
-	modes = ["Generate", "FeatureVis", "Train"]
-	mode = modes[2]
+	modes = ["Generate", "FeatureVis", "Train", "Ablate"]
+	mode = modes[0]
 
-	if mode == modes[0]:
-		generate(16000*2, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
-	elif mode == modes[1]:
+	if mode == modes[0]: #Generate
+		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+	elif mode == modes[1]: # FeatureVis
 		feature_max('postprocessing', 0, None)
-	elif mode == modes[2]:
+	elif mode == modes[3]: #ABLATE
+		ablate(['dilated_stack'], [3]);
+	elif mode == modes[2]: #TRAIN
 		fw = tf.summary.FileWriter(logdir)
 		coord = tf.train.Coordinator()
 
 		with tf.variable_scope("GEN/"):
-			Generator = model.WaveNetModel(o.options["batch_size"],
-				dilations=o.options["dilations"],
-				filter_width=o.options["filter_width"],
-				residual_channels=o.options["residual_channels"],
-				dilation_channels=o.options["dilation_channels"],
-				skip_channels=o.options["skip_channels"],
-				quantization_channels=o.options["quantization_channels"],
-				use_biases=o.options["use_biases"],
-				scalar_input=o.options["scalar_input"],
-				initial_filter_width=o.options["initial_filter_width"],
-				#global_condition_channels=o.options["noise_dimensions"],
+			Generator = model.WaveNetModel(g.options["batch_size"],
+				dilations=g.options["dilations"],
+				filter_width=g.options["filter_width"],
+				residual_channels=g.options["residual_channels"],
+				dilation_channels=g.options["dilation_channels"],
+				skip_channels=g.options["skip_channels"],
+				quantization_channels=g.options["quantization_channels"],
+				use_biases=g.options["use_biases"],
+				scalar_input=g.options["scalar_input"],
+				initial_filter_width=g.options["initial_filter_width"],
+				#global_condition_channels=g.options["noise_dimensions"],
 				global_condition_cardinality=None,
 				histograms=True,
-				final_layer_size=o.options["quantization_channels"],
+				final_layer_size=g.options["quantization_channels"],
 				add_noise=True)
 
 
 		with tf.variable_scope("DIS/"):
-			Discriminator = model.WaveNetModel(o.options["batch_size"],
-				dilations=o.options["dilations"],
-				filter_width=o.options["filter_width"],
-				residual_channels=o.options["residual_channels"],
-				dilation_channels=o.options["dilation_channels"],
-				skip_channels=o.options["skip_channels"],
-				quantization_channels=o.options["quantization_channels"],
-				use_biases=o.options["use_biases"],
-				scalar_input=o.options["scalar_input"],
-				initial_filter_width=o.options["initial_filter_width"],
+			Discriminator = model.WaveNetModel(g.options["batch_size"],
+				dilations=d.options["dilations"],
+				filter_width=d.options["filter_width"],
+				residual_channels=d.options["residual_channels"],
+				dilation_channels=d.options["dilation_channels"],
+				skip_channels=d.options["skip_channels"],
+				quantization_channels=d.options["quantization_channels"],
+				use_biases=d.options["use_biases"],
+				scalar_input=d.options["scalar_input"],
+				initial_filter_width=d.options["initial_filter_width"],
 				global_condition_channels=None,
 				global_condition_cardinality=None,
 				histograms = True,
-				final_layer_size=o.options["final_layer_size"]) # Disc should output 1
+				final_layer_size=d.options["final_layer_size"]) # Disc should output 1
 		# Audio dimensions: [Song, Samplenr, Quantization]
 		# Data loading
-		channels = o.options["quantization_channels"]
+		channels = g.options["quantization_channels"]
 		with tf.name_scope("Pre-processing"):
-			l = loader.AudioReader("maestro-v1.0.0/2017", o.options["sample_rate"], Discriminator.receptive_field, coord, stepSize=1, sampleSize=o.options["sample_size"], silenceThreshold=0.1)
-			abatch = l.deque(o.options["batch_size"])
-			mldequed = l.dequeMl(o.options["batch_size"])
+			l = loader.AudioReader("maestro-v1.0.0/2017", g.options["sample_rate"], Discriminator.receptive_field, coord, stepSize=1, sampleSize=g.options["sample_size"], silenceThreshold=0.1)
+			abatch = l.deque(g.options["batch_size"])
+			mldequed = l.dequeMl(g.options["batch_size"])
 			# Quantize audio into channels
 			mldequed = ops.mu_law_encode(mldequed, channels)
 			mldequed = Generator._one_hot(mldequed)
-			mldequed = tf.reshape(tf.cast(mldequed, tf.float32), [o.options["batch_size"], -1, channels])
+			mldequed = tf.reshape(tf.cast(mldequed, tf.float32), [g.options["batch_size"], -1, channels])
 			mltarget = tf.slice(mldequed,[0,Generator.receptive_field,0],[-1,-1,-1])
 			mlinput = tf.slice(mldequed,[0,0,0],[-1, tf.shape(mldequed)[1]-1, -1])
 			#Quantize encoded into channels
 			abatch = ops.mu_law_encode(abatch, channels)
 			encoded = Generator._one_hot(abatch)
-			#encoded = tf.reshape(tf.cast(abatch, tf.float32), [o.options["batch_size"], -1, channels])
+			#encoded = tf.reshape(tf.cast(abatch, tf.float32), [g.options["batch_size"], -1, channels])
 
-			noise = l.dequeNoise(o.options["batch_size"])
+			noise = l.dequeNoise(g.options["batch_size"])
 
 		# Generator stuff
 		with tf.variable_scope("GEN/", reuse=tf.AUTO_REUSE):
@@ -462,10 +605,10 @@ if __name__ == "__main__":
 				scaled_prediction = (scaled_prediction - loged)
 				#print(np.shape(scaled_prediction))
 				#scaled_prediction = tf.exp(scaled_prediction)
-				mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [o.options["batch_size"], o.options["quantization_channels"]]), 1)
+				mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [g.options["batch_size"], g.options["quantization_channels"]]), 1)
 				#print(np.shape(mask_indexes))
 				#mask_index = np.random.choice(
-				#		np.arange(o.options["quantization_channels"]), p=scaled_prediction)
+				#		np.arange(g.options["quantization_channels"]), p=scaled_prediction)
 				
 				mask = Generator._one_hot(mask_indexes)
 				arg_maxes = tf.sign(softies * mask)
@@ -490,10 +633,15 @@ if __name__ == "__main__":
 		# Discriminator stuff
 		with tf.variable_scope("DIS/", reuse=tf.AUTO_REUSE):
 			daudio = encoded
+			print("Diff in gen and disc receptive field:")
+			print(tf.shape(daudio)[1]-Discriminator.receptive_field)
+			# Make sure audio samples is of the correct length
+			daudio = tf.slice(daudio, [0,tf.shape(daudio)[1]-Discriminator.receptive_field,0], [-1,-1,-1])
 			r_logits = Discriminator._create_network(daudio, None)
 			#r_logits = tf.layers.dense(r_logits,1, name="Final_Layer")
 			#r_logits = tf.layers.dense(real_output, 1, name="final_D")
 		with tf.variable_scope("DIS/", reuse=True):
+			fake_sample = tf.slice(fake_sample, [0,tf.shape(daudio)[1]-Discriminator.receptive_field,0], [-1,-1,-1])
 			f_logits = Discriminator._create_network(fake_sample, None)
 			#f_logits = tf.layers.dense(f_logits,1, name="Final_Layer")
 			#f_logits = tf.layers.dense(fake_output, 1, name="final_D")
@@ -504,10 +652,12 @@ if __name__ == "__main__":
 
 		with tf.name_scope("GP/"):
 			# GP
-			e = tf.random_uniform([o.options["batch_size"]],0,1) #WRONG
-			e = tf.reshape(e, (o.options["batch_size"],-1,1))
+			e = tf.random_uniform([g.options["batch_size"]],0,1) #WRONG
+			e = tf.reshape(e, (g.options["batch_size"],-1,1))
 			e = tf.tile(e, [1,tf.shape(daudio)[1],channels])
 			polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e))
+		print("shape polated")
+		print(np.shape(polated))
 
 		with tf.variable_scope("DIS/", reuse=True):
 			discPolated = Discriminator._create_network(polated, None)

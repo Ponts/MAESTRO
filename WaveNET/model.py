@@ -235,7 +235,7 @@ class WaveNetModel(object):
             if self.add_noise:
                 current = dict()
                 with tf.variable_scope('gan_noise'):
-                    current["noise"] = create_variable('noise', [1,100,self.quantization_channels]) # Maybe wrong??
+                    current["noise"] = create_variable('noise', [1,100,self.skip_channels]) # Maybe wrong??
                 var['noise'] = current
 
         return var
@@ -336,6 +336,95 @@ class WaveNetModel(object):
 
         return skip_contribution, input_batch + transformed, out
 
+    def _create_ablated_dilation_layer(self, input_batch, layer_index, dilation,
+                               global_condition_batch, output_width, ablation):
+        '''Creates a single causal dilated convolution layer.
+        Args:
+             input_batch: Input to the dilation layer.
+             layer_index: Integer indicating which layer this is.
+             dilation: Integer specifying the dilation size.
+             global_conditioning_batch: Tensor containing the global data upon
+                 which the output is to be conditioned upon. Shape:
+                 [batch size, 1, channels]. The 1 is for the axis
+                 corresponding to time so that the result is broadcast to
+                 all time steps.
+        The layer contains a gated filter that connects to dense output
+        and to a skip connection:
+               |-> [gate]   -|        |-> 1x1 conv -> skip output
+               |             |-> (*) -|
+        input -|-> [filter] -|        |-> 1x1 conv -|
+               |                                    |-> (+) -> dense output
+               |------------------------------------|
+        Where `[gate]` and `[filter]` are causal convolutions with a
+        non-linear activation at the output. Biases and global conditioning
+        are omitted due to the limits of ASCII art.
+        '''
+        variables = self.variables['dilated_stack'][layer_index]
+
+        weights_filter = variables['filter']
+        weights_gate = variables['gate']
+
+        conv_filter = causal_conv(input_batch, weights_filter, dilation)
+        conv_gate = causal_conv(input_batch, weights_gate, dilation)
+
+        if global_condition_batch is not None:
+            weights_gc_filter = variables['gc_filtweights']
+            conv_filter = conv_filter + tf.nn.conv1d(global_condition_batch,
+                                                     weights_gc_filter,
+                                                     stride=1,
+                                                     padding="SAME",
+                                                     name="gc_filter")
+            weights_gc_gate = variables['gc_gateweights']
+            conv_gate = conv_gate + tf.nn.conv1d(global_condition_batch,
+                                                 weights_gc_gate,
+                                                 stride=1,
+                                                 padding="SAME",
+                                                 name="gc_gate")
+
+        if self.use_biases:
+            filter_bias = variables['filter_bias']
+            gate_bias = variables['gate_bias']
+            conv_filter = tf.add(conv_filter, filter_bias)
+            conv_gate = tf.add(conv_gate, gate_bias)
+
+        out = tf.tanh(conv_filter) * tf.sigmoid(conv_gate)
+        out = out * ablation
+
+        # The 1x1 conv to produce the residual output
+        weights_dense = variables['dense']
+        transformed = tf.nn.conv1d(
+            out, weights_dense, stride=1, padding="SAME", name="dense")
+
+        # The 1x1 conv to produce the skip output
+        skip_cut = tf.shape(out)[1] - output_width
+        out_skip = tf.slice(out, [0, skip_cut, 0], [-1, -1, -1])
+        weights_skip = variables['skip']
+        skip_contribution = tf.nn.conv1d(
+            out_skip, weights_skip, stride=1, padding="SAME", name="skip")
+
+        if self.use_biases:
+            dense_bias = variables['dense_bias']
+            skip_bias = variables['skip_bias']
+            transformed = transformed + dense_bias
+            skip_contribution = skip_contribution + skip_bias
+
+        if self.histograms:
+            layer = 'layer{}'.format(layer_index)
+            tf.summary.histogram(layer + '_filter', weights_filter)
+            tf.summary.histogram(layer + '_gate', weights_gate)
+            tf.summary.histogram(layer + '_dense', weights_dense)
+            tf.summary.histogram(layer + '_skip', weights_skip)
+            if self.use_biases:
+                tf.summary.histogram(layer + '_biases_filter', filter_bias)
+                tf.summary.histogram(layer + '_biases_gate', gate_bias)
+                tf.summary.histogram(layer + '_biases_dense', dense_bias)
+                tf.summary.histogram(layer + '_biases_skip', skip_bias)
+
+        input_cut = tf.shape(input_batch)[1] - tf.shape(transformed)[1]
+        input_batch = tf.slice(input_batch, [0, input_cut, 0], [-1, -1, -1])
+
+        return skip_contribution, input_batch + transformed, out
+
     def _generator_conv(self, input_batch, state_batch, weights):
         '''Perform convolution for a single convolutional processing step.'''
         # TODO generalize to filter_width > 2
@@ -393,7 +482,7 @@ class WaveNetModel(object):
 
         return skip_contribution, input_batch + transformed
 
-    # Name is dilated stack or postprocessing, index is between 0 and 49 for dilated stack
+    # Name is dilated stack or postprocessing, index is between 0 and options setting for dilated stack
     # 
     def _get_layer_activation(self, name, index, input_batch, global_condition_batch, noise = None):
         '''Construct the WaveNet network.'''
@@ -451,6 +540,71 @@ class WaveNetModel(object):
 
         return None
 
+
+    # Ablation is a dict containing a mask for the given input
+    # Implemented are ablation['dilated_stack'][index]
+    def _create_ablated_network(self, input_batch, global_condition_batch, ablation, noise = None):
+        '''Construct the WaveNet network.'''
+        outputs = []
+        current_layer = input_batch
+
+        # Pre-process the input with a regular convolution
+        current_layer = self._create_causal_layer(current_layer)
+
+        output_width = tf.shape(input_batch)[1] - self.receptive_field + 1
+
+        # Add all defined dilation layers.
+        with tf.name_scope('dilated_stack'):
+            for layer_index, dilation in enumerate(self.dilations):
+                with tf.name_scope('layer{}'.format(layer_index)):
+                    # If the ablation contains the layer, use the ablation. Else do a normal forward pass
+                    if ['dilated_stack'] in ablation and layer_index in ablation['dilated_stack']: #len(ablation['dilated_stack']) < layer_index and layer_index >= 0:
+                        output, current_layer, _ = self._create_ablated_dilation_layer(
+                            current_layer, layer_index, dilation,
+                            global_condition_batch, output_width, ablation['dilated_stack'][layer_index])
+                    else:
+                        output, current_layer, _ = self._create_dilation_layer(
+                            current_layer, layer_index, dilation,
+                            global_condition_batch, output_width)
+                    outputs.append(output)
+
+        with tf.name_scope('postprocessing'):
+            # Perform (+) -> ReLU -> 1x1 conv -> ReLU -> 1x1 conv to
+            # postprocess the output.
+            if self.add_noise:
+                n = self.variables['noise']['noise']
+
+            w1 = self.variables['postprocessing']['postprocess1']
+            w2 = self.variables['postprocessing']['postprocess2']
+            if self.use_biases:
+                b1 = self.variables['postprocessing']['postprocess1_bias']
+                b2 = self.variables['postprocessing']['postprocess2_bias']
+
+            if self.histograms:
+                tf.summary.histogram('postprocess1_weights', w1)
+                tf.summary.histogram('postprocess2_weights', w2)
+                if self.use_biases:
+                    tf.summary.histogram('postprocess1_biases', b1)
+                    tf.summary.histogram('postprocess2_biases', b2)
+
+            # We skip connections from the outputs of each layer, adding them
+            # all up here.
+            if self.add_noise:
+                noised = tf.nn.conv1d(noise,n,stride=1, padding="SAME")
+                outputs.append(noised)
+
+            total = sum(outputs) # Make noise vector one of these?
+            transformed1 = tf.nn.relu(total)
+
+            conv1 = tf.nn.conv1d(transformed1, w1, stride=1, padding="SAME")
+            if self.use_biases:
+                conv1 = tf.add(conv1, b1)
+            transformed2 = tf.nn.relu(conv1)
+            conv2 = tf.nn.conv1d(transformed2, w2, stride=1, padding="SAME")
+            if self.use_biases:
+                conv2 = tf.add(conv2, b2)
+
+        return conv2
 
     def _create_network(self, input_batch, global_condition_batch, noise = None):
         '''Construct the WaveNet network.'''

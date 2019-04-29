@@ -87,7 +87,6 @@ class AudioReader():
 				if self.coord.should_stop():
 					stop = True
 					break
-				print(np.shape(audio))
 				if self.silenceThreshold is not None:
 					audio = self.trimSilence(audio[:, 0], self.silenceThreshold)
 					audio = audio.reshape(-1, 1)
