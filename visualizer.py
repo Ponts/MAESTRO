@@ -115,6 +115,7 @@ class Visualizer():
 		print(len(audio))
 		#print(audio[int(len(audio)/2):int(len(audio)/2)+300])
 		plt.plot(audio)#[int(len(audio)/2):int(len(audio)/2)+5147])
+		plt.plot(audio[:20479])
 		plt.show()
 		return
 		length = len(audio)

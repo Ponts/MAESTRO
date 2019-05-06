@@ -153,12 +153,16 @@ def generate(length, conditionOn = None):
 							np.logaddexp.reduce(scaled_prediction))
 		scaled_prediction = np.exp(scaled_prediction)
 		np.seterr(divide='warn')
+		#print(np.sum(newest_sample - scaled_prediction))
 		# Prediction distribution at temperature=1.0 should be unchanged after
 		# scaling.
 		#print(np.argmax(scaled_prediction))
+
+		#scaled_prediction = newest_sample
+
 		sample = np.random.choice(
 			np.arange(g.options["quantization_channels"]), p=scaled_prediction)
-		sample = np.argmax(scaled_prediction)
+		#sample = np.argmax(newest_sample)
 		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
 		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
 		bar.update(i+1)
@@ -417,13 +421,13 @@ def train(coord, G, D, loader, fw):
 	#sam = sess.run(fake_sample)
 	step = last_global_step
 	last_saved_step = last_global_step
-	genPretrainingSteps = 1600000
+	genPretrainingSteps = 2600000
 	discPretrainingSteps = 20000
 	if last_saved_step is None:
 		last_saved_step = 0
 		step = 0
 	try:			   
-		for j in range(2000000):
+		for j in range(20000000):
 			if step < genPretrainingSteps: # Do pretraining training
 				startTime = time.time()
 				_, lossMl = sess.run([mlStep, mlLoss])
