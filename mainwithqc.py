@@ -148,7 +148,7 @@ def generate(length, conditionOn = None):
 		#Sample from newest_sample
 
 		np.seterr(divide='ignore')
-		scaled_prediction = np.log(newest_sample) / 0.9#args.temperature
+		scaled_prediction = np.log(newest_sample) / 0.3#args.temperature
 		scaled_prediction = (scaled_prediction -
 							np.logaddexp.reduce(scaled_prediction))
 		scaled_prediction = np.exp(scaled_prediction)
@@ -421,7 +421,7 @@ def train(coord, G, D, loader, fw):
 	#sam = sess.run(fake_sample)
 	step = last_global_step
 	last_saved_step = last_global_step
-	genPretrainingSteps = 2600000
+	genPretrainingSteps = 2498201 # Pre-training ended for 
 	discPretrainingSteps = 20000
 	if last_saved_step is None:
 		last_saved_step = 0
@@ -603,19 +603,19 @@ if __name__ == "__main__":
 				#newest_sample = softies[:,-1,:]
 				#Sample from newest_sample
 
-				scaled_prediction = tf.log(softies) / 0.9 #args.temperature
-				loged = tf.log(tf.reduce_sum(tf.exp(scaled_prediction), axis=2, keepdims = True))
+				#scaled_prediction = tf.log(softies) / 0.9 #args.temperature
+				#loged = tf.log(tf.reduce_sum(tf.exp(scaled_prediction), axis=2, keepdims = True))
 				#print(np.shape(loged))
-				scaled_prediction = (scaled_prediction - loged)
+				#scaled_prediction = (scaled_prediction - loged)
 				#print(np.shape(scaled_prediction))
 				#scaled_prediction = tf.exp(scaled_prediction)
-				mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [g.options["batch_size"], g.options["quantization_channels"]]), 1)
+				#mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [g.options["batch_size"], g.options["quantization_channels"]]), 1)
 				#print(np.shape(mask_indexes))
 				#mask_index = np.random.choice(
 				#		np.arange(g.options["quantization_channels"]), p=scaled_prediction)
 				
-				mask = Generator._one_hot(mask_indexes)
-				arg_maxes = tf.sign(softies * mask)
+				#mask = Generator._one_hot(mask_indexes)
+				#arg_maxes = tf.sign(softies * mask)
 
 				#GS = tf.gradients(arg_maxes, softies)[0]
 				#print("GRADS")
@@ -629,7 +629,7 @@ if __name__ == "__main__":
 
 				#print(np.shape(one_step))
 				# Shift the generated vector
-				fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), arg_maxes),1)
+				fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), softies),1)
 				#print("fake sample")
 				#print(np.shape(fake_sample))
 
