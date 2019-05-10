@@ -43,6 +43,7 @@ def load(saver, sess, logDir):
 		end="")
 
 	ckpt = tf.train.get_checkpoint_state(logDir)
+	#ckpt = tf.train.latest_checkpoint(logDir)
 	if ckpt:
 		print("  Checkpoint found: {}".format(ckpt.model_checkpoint_path))
 		global_step = int(ckpt.model_checkpoint_path
@@ -131,7 +132,7 @@ def generate(length, conditionOn = None):
 	noise = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
 
 	# REMOVE THIS LATER
-	noise = np.zeros((1,1,100))
+	#noise = np.zeros((1,1,100))
 	fakey = np.reshape(fakey, [1,-1,1])
 	gen = sess.run(encoded, feed_dict={sampleph : fakey})
 	generated = gen#[0,:,0].tolist()
@@ -146,9 +147,9 @@ def generate(length, conditionOn = None):
 		#fakey = sess.run(fake_sample, feed_dict={encoded : fakey, appendph : prediction})
 		newest_sample = prediction[-1,-1,:]
 		#Sample from newest_sample
-
+		#print(newest_sample)
 		np.seterr(divide='ignore')
-		scaled_prediction = np.log(newest_sample) / 0.3#args.temperature
+		scaled_prediction = np.log(newest_sample) / 0.9#args.temperature
 		scaled_prediction = (scaled_prediction -
 							np.logaddexp.reduce(scaled_prediction))
 		scaled_prediction = np.exp(scaled_prediction)
@@ -214,13 +215,15 @@ def feature_max(layerName, layerIndex, unit_index = None):
 	to_optimise = Generator._get_layer_activation(layerName, layerIndex, one_hot, None, noise = zeros)
 	if unit_index is not None and unit_index < np.shape(to_optimise)[2]:
 		to_optimise = to_optimise[:,:,unit_index];
-		print(np.shape(to_optimise))
+		
+	print("to_optimise shape")
+	print(np.shape(to_optimise))
 	gs = tf.gradients(to_optimise, one_hot)[0]
 	
 	#prob_dist = np.random.randint(0, g.options["quantization_channels"], size= (1,Generator.receptive_field)) # Start with random noise
 	#prob_dist = np.ones((1,Generator.receptive_field, g.options["quantization_channels"])) / (g.options["quantization_channels"])
 	prob_dist = softmax(np.random.random_sample((1, Generator.receptive_field, g.options["quantization_channels"])))
-	length = 1000
+	length = 2048
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 	bar.start()
@@ -275,6 +278,90 @@ def softmax(x, ax=2):
 	return ex / np.sum(ex, axis=ax, keepdims=True)
 
 
+def investigate(layerNames, layerIndexes):
+	means = {}
+	variations = {}
+	ablations = {}
+	coord = tf.train.Coordinator()
+	sess = tf.Session()
+	to_restore = {}
+	with tf.variable_scope("GEN/"):
+		Generator = model.WaveNetModel(g.options["batch_size"],
+			dilations=g.options["dilations"],
+			filter_width=g.options["filter_width"],
+			residual_channels=g.options["residual_channels"],
+			dilation_channels=g.options["dilation_channels"],
+			skip_channels=g.options["skip_channels"],
+			quantization_channels=g.options["quantization_channels"],
+			use_biases=g.options["use_biases"],
+			scalar_input=g.options["scalar_input"],
+			initial_filter_width=g.options["initial_filter_width"],
+			global_condition_cardinality=None,
+			histograms=False,
+			add_noise=True)
+	variables_to_restore = {
+		var.name[:-2]: var for var in tf.global_variables()
+		if not (('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name) }
+
+	l = loader.AudioReader("maestro-v1.0.0/2017", g.options["sample_rate"], Generator.receptive_field, coord, stepSize=1, sampleSize=g.options["sample_size"], silenceThreshold=0.1)
+	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+	l.startThreads(sess)
+
+	saver = tf.train.Saver(variables_to_restore)
+	print("Restoring model")
+	ckpt = tf.train.get_checkpoint_state(logdir)
+	saver.restore(sess, ckpt.model_checkpoint_path)
+	print("Model {} restored".format(ckpt.model_checkpoint_path))
+
+	deque = l.deque(g.options["batch_size"])
+	zeros = np.zeros((1,1,g.options["noise_dimensions"]))
+	noiseph = tf.placeholder(tf.float32, [1,1,g.options["noise_dimensions"]])
+	encoded = ops.mu_law_encode(deque, g.options["quantization_channels"])
+	one_hot = Generator._one_hot(encoded)
+	noise_vector = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
+	output = Generator._create_network(one_hot, None, noise = noiseph)
+
+	for name in layerNames:
+		means[name] = {}
+		ablations[name] = {}
+		variations[name] = {}
+		for i in layerIndexes:
+			ablations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros),i)
+			abl = tf.reduce_mean(ablations[name][i], axis=[0,1])
+			means[name][i] = tf.Variable(tf.zeros(tf.shape(abl)), name="ABL/mean_"+name+str(i))
+			to_restore["ABL/mean_"+name+str(i)] = means[name][i]
+			variations[name][i] = tf.Variable(tf.zeros(tf.shape(abl)), name="ABL/var_"+name+str(i))
+			to_restore["ABL/var_"+name+str(i)] = variations[name][i]
+
+
+	print("Restoring previous statistics")
+	ablatesaver = tf.train.Saver(to_restore)
+	ablateckpt = tf.train.get_checkpoint_state(ablatelogs)
+	if ablateckpt is not None:
+		optimistic_restore(sess, ablateckpt.model_checkpoint_path, tf.get_default_graph())
+	print("Statistics restored")
+
+	name = layerNames[0]
+	i = layerIndexes[0]
+	
+	limits = means[name][i] + 3*variations[name][i]
+	mask = ablations[name][i] > limits
+	actcount = sess.run(tf.reduce_sum(tf.cast(mask, tf.float32), axis=[1]))[0,:]
+	print(np.shape(actcount))
+	print(actcount)
+
+
+
+def get_causal_activations(activations, layerIndex):
+	jump = g.options["dilations"][layerIndex + 1]
+	# shape is batch, time, channel
+	# want to get correct time ones
+	end = tf.shape(activations)[1]
+	indices = tf.range(end, -1, -jump)
+	return tf.gather(activations, indices, axis=1)
+
+	
+
 def ablate(layerNames, layerIndexes):
 	ablations = {}
 	means = {}
@@ -283,7 +370,6 @@ def ablate(layerNames, layerIndexes):
 	sum2 = {}
 	coord = tf.train.Coordinator()
 	sess = tf.Session()
-	sr = g.options["sample_rate"]
 
 	with tf.variable_scope("GEN/"):
 		Generator = model.WaveNetModel(g.options["batch_size"],
@@ -330,7 +416,10 @@ def ablate(layerNames, layerIndexes):
 		counters[name] = {}
 		sum2[name] = {}
 		for i in layerIndexes:
-			ablations[name][i] = tf.reduce_mean(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), axis=[0,1]) 
+			ablations[name][i] = tf.reduce_mean(get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i), axis=[0,1])
+			shape = tf.Variable(np.shape(ablations[name][i])[0], name="ABL/shape_"+name+str(i))
+			to_save["ABL/shape_"+name+str(i)] = shape
+
 			s2 = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/zero_"+name+str(i))
 			sum2[name][i] = s2.assign_add(ablations[name][i]**2)
 			to_save["ABL/zero_"+name+str(i)] = s2
@@ -344,12 +433,14 @@ def ablate(layerNames, layerIndexes):
 			to_save["ABL/mean_"+name+str(i)] = m
 
 			v = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/var_"+name+str(i))
-			variations[name][i] = v.assign(tf.sqrt((s2 / (c) ) - (m**2)))
+			variations[name][i] = v.assign(tf.sqrt((s2 / c ) - (m**2)))
 			to_save["ABL/var_"+name+str(i)] = v
 
-
-
+	
+	#mm = tf.get_variable("ABL/mean_"+layerNames[0]+str(layerIndexes[0]), shape)
+	
 	sess.run(tf.global_variables_initializer())
+	
 	print("Dict created")
 	print("Restoring previous statistics")
 	ablatesaver = tf.train.Saver(to_save)
@@ -357,17 +448,22 @@ def ablate(layerNames, layerIndexes):
 	if ablateckpt is not None:
 		optimistic_restore(sess, ablateckpt.model_checkpoint_path, tf.get_default_graph())
 	print("Statistics restored")
+	#with tf.variable_scope("", reuse= True):
+	#	shape = tf.get_variable("ABL/shape_"+layerNames[0]+str(layerIndexes[0]), 1)
+	#print("SHAPE")
+	#shape = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="ABL/shape_"+layerNames[0]+str(layerIndexes[0]))[0]
 
+	
 	ms = []
 	# Gather statistics
-	for k in range(300):
+	for k in range(1000):
 		for name in layerNames:
 			for i in layerIndexes:
 				print(k)
 				sess.run(sum2[name][i])
 				ms.append(sess.run(means[name][i])[0])
 				sess.run(variations[name][i])
-				c = sess.run(counters[name][i])
+				sess.run(counters[name][i])
 
 
 	#mean = sess.run(means['dilated_stack'][3])
@@ -382,11 +478,6 @@ def ablate(layerNames, layerIndexes):
 
 	coord.request_stop()
 	coord.join(threads)
-
-
-
-
-
 
 
 def train(coord, G, D, loader, fw):
@@ -410,7 +501,6 @@ def train(coord, G, D, loader, fw):
 	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 	loader.startThreads(sess)
 
-	
 	# Generate samples of the Discriminators receptive field
 	samples = []
 	recField = D.receptive_field
@@ -421,8 +511,8 @@ def train(coord, G, D, loader, fw):
 	#sam = sess.run(fake_sample)
 	step = last_global_step
 	last_saved_step = last_global_step
-	genPretrainingSteps = 2498201 # Pre-training ended for 
-	discPretrainingSteps = 20000
+	genPretrainingSteps = 942962#2498201 # Pre-training ended for 
+	discPretrainingSteps = 10000
 	if last_saved_step is None:
 		last_saved_step = 0
 		step = 0
@@ -457,8 +547,6 @@ def train(coord, G, D, loader, fw):
 				print("Disc pre Loss :  " + str(dLoss) + ", Time: " + str(dur))
 				
 			else: # Do gan-training
-				save(saver, sess, logdir, step)
-				return
 				startTime = time.time()
 
 				# Train D 5 times	
@@ -517,15 +605,17 @@ def train(coord, G, D, loader, fw):
 if __name__ == "__main__":
 	args = get_arguments()
 	logdir = args.logdir
-	modes = ["Generate", "FeatureVis", "Train", "Ablate"]
-	mode = modes[0]
+	modes = ["Generate", "FeatureVis", "Train", "Ablate", "Investigate"]
+	mode = modes[4]
 
 	if mode == modes[0]: #Generate
 		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[1]: # FeatureVis
-		feature_max('postprocessing', 0, None)
+		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
-		ablate(['dilated_stack'], [3]);
+		ablate(['dilated_stack'], [0]);
+	elif mode == modes[4]: #INVESTIGATE
+		investigate(['dilated_stack'], [0])
 	elif mode == modes[2]: #TRAIN
 		fw = tf.summary.FileWriter(logdir)
 		coord = tf.train.Coordinator()
@@ -596,6 +686,9 @@ if __name__ == "__main__":
 				#gs = tf.gradients(one_step, audio)[0]
 				#print(np.shape(gs))
 				softies = tf.nn.softmax(one_step, axis=2)
+				print("Softies shape")
+				print(np.shape(softies))
+
 				#print(np.shape(arg_maxes))
 				#arg_maxes = tf.sign(tf.reduce_max(softies, axis=2, keepdims=True)-softies)
 				#arg_maxes = (arg_maxes-1)*(-1)
@@ -603,19 +696,19 @@ if __name__ == "__main__":
 				#newest_sample = softies[:,-1,:]
 				#Sample from newest_sample
 
-				#scaled_prediction = tf.log(softies) / 0.9 #args.temperature
-				#loged = tf.log(tf.reduce_sum(tf.exp(scaled_prediction), axis=2, keepdims = True))
+				scaled_prediction = tf.log(softies) / 0.9 #args.temperature # USE
+				loged = tf.log(tf.reduce_sum(tf.exp(scaled_prediction), axis=2, keepdims = True)) #USE
 				#print(np.shape(loged))
-				#scaled_prediction = (scaled_prediction - loged)
+				scaled_prediction = (scaled_prediction - loged) #USE
 				#print(np.shape(scaled_prediction))
-				#scaled_prediction = tf.exp(scaled_prediction)
-				#mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [g.options["batch_size"], g.options["quantization_channels"]]), 1)
+				#scaled_prediction = tf.exp(scaled_prediction) 
+				mask_indexes = tf.multinomial(tf.reshape(scaled_prediction[:,0,:], [g.options["batch_size"], g.options["quantization_channels"]]), 1) #USE
 				#print(np.shape(mask_indexes))
 				#mask_index = np.random.choice(
 				#		np.arange(g.options["quantization_channels"]), p=scaled_prediction)
 				
-				#mask = Generator._one_hot(mask_indexes)
-				#arg_maxes = tf.sign(softies * mask)
+				mask = Generator._one_hot(mask_indexes) #USE
+				arg_maxes = tf.sign(softies * mask) #USE
 
 				#GS = tf.gradients(arg_maxes, softies)[0]
 				#print("GRADS")
@@ -625,11 +718,14 @@ if __name__ == "__main__":
 				#print(np.shape(arg_maxes))
 				#gs = tf.gradients(arg_maxes, audio)[0]
 				#print(np.shape(gs))
-				#one_step = Generator._one_hot(arg_maxes)
+				#one_step = Generator._one_hot(arg_maxes) 
 
 				#print(np.shape(one_step))
 				# Shift the generated vector
-				fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), softies),1)
+				#fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), softies),1)   # if doing input with probability distribution
+				fake_sample = tf.concat((tf.slice(audio, [0,1,0], [-1,-1,-1]), arg_maxes),1)    # use
+				print("fake sample shape")
+				print(np.shape(fake_sample))
 				#print("fake sample")
 				#print(np.shape(fake_sample))
 
@@ -656,7 +752,7 @@ if __name__ == "__main__":
 
 		with tf.name_scope("GP/"):
 			# GP
-			e = tf.random_uniform([g.options["batch_size"]],0,1) #WRONG
+			e = tf.random_uniform([g.options["batch_size"]],0,1) 
 			e = tf.reshape(e, (g.options["batch_size"],-1,1))
 			e = tf.tile(e, [1,tf.shape(daudio)[1],channels])
 			polated = tf.add(tf.multiply(daudio,e), tf.multiply(fake_sample,1-e))

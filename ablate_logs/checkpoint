@@ -1,0 +1,2 @@
+model_checkpoint_path: "ablate.ckpt"
+all_model_checkpoint_paths: "ablate.ckpt"
