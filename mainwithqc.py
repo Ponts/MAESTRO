@@ -344,11 +344,13 @@ def investigate(layerNames, layerIndexes):
 	name = layerNames[0]
 	i = layerIndexes[0]
 	
-	limits = means[name][i] + 3*variations[name][i]
+	limits = means[name][i] + 2*variations[name][i]
 	mask = ablations[name][i] > limits
-	actcount = sess.run(tf.reduce_sum(tf.cast(mask, tf.float32), axis=[1]))[0,:]
-	print(np.shape(actcount))
-	print(actcount)
+	act = sess.run(ablations[name][i])
+	print(sess.run(tf.reduce_max(act, axis=[0,1])))
+	print(sess.run(limits))
+	#print(np.shape(actcount))
+	#print(actcount)
 
 
 
@@ -606,7 +608,7 @@ if __name__ == "__main__":
 	args = get_arguments()
 	logdir = args.logdir
 	modes = ["Generate", "FeatureVis", "Train", "Ablate", "Investigate"]
-	mode = modes[4]
+	mode = modes[0]
 
 	if mode == modes[0]: #Generate
 		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
