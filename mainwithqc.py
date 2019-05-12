@@ -12,6 +12,7 @@ import librosa
 import time
 import argparse
 import matplotlib.pyplot as plt
+import visualizer
 
 
 logdir = "./tfb_logs/"
@@ -344,9 +345,10 @@ def investigate(layerNames, layerIndexes):
 	name = layerNames[0]
 	i = layerIndexes[0]
 	
-	limits = means[name][i] + 2*variations[name][i]
+	limits = means[name][i] + variations[name][i]
 	mask = ablations[name][i] > limits
 	act = sess.run(ablations[name][i])
+	print(sess.run(variations[name][i]))
 	print(sess.run(tf.reduce_max(act, axis=[0,1])))
 	print(sess.run(limits))
 	#print(np.shape(actcount))
@@ -358,20 +360,17 @@ def get_causal_activations(activations, layerIndex):
 	jump = g.options["dilations"][layerIndex + 1]
 	# shape is batch, time, channel
 	# want to get correct time ones
-	end = tf.shape(activations)[1]
+	end = tf.shape(activations)[1] - 1
 	indices = tf.range(end, -1, -jump)
 	return tf.gather(activations, indices, axis=1)
 
 	
-
-def ablate(layerNames, layerIndexes):
-	ablations = {}
-	means = {}
-	variations = {}
-	counters = {}
-	sum2 = {}
+def create_histograms(layerNames, layerIndexes):
+	activations = {}
+	summaries = []
 	coord = tf.train.Coordinator()
 	sess = tf.Session()
+	writer = tf.summary.FileWriter("histograms")
 
 	with tf.variable_scope("GEN/"):
 		Generator = model.WaveNetModel(g.options["batch_size"],
@@ -409,38 +408,131 @@ def ablate(layerNames, layerIndexes):
 	encoded = ops.mu_law_encode(deque, g.options["quantization_channels"])
 	one_hot = Generator._one_hot(encoded)
 
+	for name in layerNames:
+		activations[name] = {}
+		for i in layerIndexes:
+			#activations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i)
+			activations[name][i] = Generator._get_layer_activation(name, i, one_hot, None, noise=zeros)
+			for l in range(g.options["residual_channels"]):
+				tf.summary.histogram(name + "_layer_" + str(i) + "_unit_" + str(0), tf.reshape(activations[name][i][:,:,l], (-1,1)))
+			#units = tf.shape(activations[name][i])[2]
+			#def add(a):
+			#	tf.summary.histogram(name + "_layer_" + str(i) + "_unit_" + str(a), activations[name][i][:,:,a])
+			#	tf.add(a,1)
+			#	return tf.constant(0)
+
+			#stop = lambda a: tf.less(a, units)
+
+			#tf.while_loop(stop, add, [0])
+				
+	summaries = tf.summary.merge_all()
+	#acts = []
+	for i in range(1000):
+		summ = sess.run(summaries)
+		#act = sess.run(activations['dilated_stack'][0])[0,:,0]
+		#print(act)
+		print(i/1000)
+		#acts = np.concatenate((acts, act))
+		writer.add_summary(summ, global_step = 0)
+
+	#plt.hist(acts, 32)
+	#plt.show()
+
+	
+	coord.request_stop()
+	coord.join(threads)
+
+
+def ablate(layerNames, layerIndexes):
+	sm = {}
+	activations = {}
+	means = {}
+	variations = {}
+	counters = {}
+	sum2 = {}
+	batch_size = {}
+	sum2save = {}
+	sum2saveop = {}
+	meanssaveop = {}
+	counterssaveop = {}
+	variationssaveop = {}
+	coord = tf.train.Coordinator()
+	sess = tf.Session()
+
+	with tf.variable_scope("GEN/"):
+		Generator = model.WaveNetModel(g.options["batch_size"],
+			dilations=g.options["dilations"],
+			filter_width=g.options["filter_width"],
+			residual_channels=g.options["residual_channels"],
+			dilation_channels=g.options["dilation_channels"],
+			skip_channels=g.options["skip_channels"],
+			quantization_channels=g.options["quantization_channels"],
+			use_biases=g.options["use_biases"],
+			scalar_input=g.options["scalar_input"],
+			initial_filter_width=g.options["initial_filter_width"],
+			global_condition_cardinality=None,
+			histograms=False,
+			add_noise=True)
+	variables_to_restore = {
+		var.name[:-2]: var for var in tf.global_variables()
+		if not (('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name) }
+	
+	# Data reading
+	l = loader.AudioReader("maestro-v1.0.0/2017", g.options["sample_rate"], Generator.receptive_field, coord, stepSize=1, sampleSize=g.options["sample_size"], silenceThreshold=0.1)
+	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+	l.startThreads(sess)
+
+	saver = tf.train.Saver(variables_to_restore)
+	print("Restoring model")
+	ckpt = tf.train.get_checkpoint_state(logdir)
+	saver.restore(sess, ckpt.model_checkpoint_path)
+	print("Model {} restored".format(ckpt.model_checkpoint_path))
+
+	deque = l.deque(g.options["batch_size"])
+	zeros = np.zeros((1,1,g.options["noise_dimensions"]))
+	encoded = ops.mu_law_encode(deque, g.options["quantization_channels"])
+	one_hot = Generator._one_hot(encoded)
+
 	to_save = {}
 	# Create dicts
 	for name in layerNames:
-		ablations[name] = {}
+		sm[name] = {}
+		activations[name] = {}
 		means[name] = {}
 		variations[name] = {}
 		counters[name] = {}
 		sum2[name] = {}
+		batch_size[name] = {}
+		sum2save[name] = {}
+		sum2saveop[name] = {}
+		meanssaveop[name] = {}
+		counterssaveop[name] = {}
+		variationssaveop[name] = {}
 		for i in layerIndexes:
-			ablations[name][i] = tf.reduce_mean(get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i), axis=[0,1])
-			shape = tf.Variable(np.shape(ablations[name][i])[0], name="ABL/shape_"+name+str(i))
-			to_save["ABL/shape_"+name+str(i)] = shape
+			activations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i)
+			sm[name][i] = tf.reduce_sum(activations[name][i], axis=[0,1])
+			sum2[name][i] = tf.reduce_sum(tf.square(activations[name][i]), axis=[0,1])		
+			batch_size[name][i] = tf.to_float(tf.shape(activations[name][i])[0] + tf.shape(activations[name][i])[1])
 
-			s2 = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/zero_"+name+str(i))
-			sum2[name][i] = s2.assign_add(ablations[name][i]**2)
-			to_save["ABL/zero_"+name+str(i)] = s2
 
-			c = tf.Variable(0,name="ABL/counter_"+name+str(i),dtype=tf.float32)
-			counters[name][i] = c.assign_add(1)
-			to_save["ABL/counter_"+name+str(i)] = c
+			# Save variables
+			sum2save[name][i] = tf.Variable(tf.zeros(tf.shape(sm[name][i])), name="ABL/sum2_"+name+str(i))
+			to_save["ABL/sum2_"+name+str(i)] = sum2save[name][i]
 
-			m = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/mean_"+name+str(i))
-			means[name][i] = m.assign(((m * c) + ablations[name][i] ) / (c+1))
-			to_save["ABL/mean_"+name+str(i)] = m
+			counters[name][i] = tf.Variable(0,name="ABL/counter_"+name+str(i),dtype=tf.float32)
+			to_save["ABL/counter_"+name+str(i)] = counters[name][i]
 
-			v = tf.Variable(tf.zeros(tf.shape(ablations[name][i])), name="ABL/var_"+name+str(i))
-			variations[name][i] = v.assign(tf.sqrt((s2 / c ) - (m**2)))
-			to_save["ABL/var_"+name+str(i)] = v
+			means[name][i] = tf.Variable(tf.zeros(tf.shape(sm[name][i])), name="ABL/mean_"+name+str(i))
+			to_save["ABL/mean_"+name+str(i)] = means[name][i]
 
-	
-	#mm = tf.get_variable("ABL/mean_"+layerNames[0]+str(layerIndexes[0]), shape)
-	
+			variations[name][i] = tf.Variable(tf.zeros(tf.shape(sm[name][i])), name="ABL/var_"+name+str(i))
+			to_save["ABL/var_"+name+str(i)] = variations[name][i]
+			
+			sum2saveop[name][i] = tf.assign(sum2save[name][i], sum2save[name][i] + sm[name][i])
+			meanssaveop[name][i] = tf.assign(means[name][i], ((means[name][i] * counters[name][i]) + sm[name][i]) / (counters[name][i] + batch_size[name][i] )  )
+			counterssaveop[name][i] = tf.assign(counters[name][i], counters[name][i] + batch_size[name][i])
+			variationssaveop[name][i] = tf.assign(variations[name][i], tf.sqrt(tf.abs((sum2save[name][i] / counters[name][i]) - tf.square(means[name][i]))))
+
 	sess.run(tf.global_variables_initializer())
 	
 	print("Dict created")
@@ -450,29 +542,21 @@ def ablate(layerNames, layerIndexes):
 	if ablateckpt is not None:
 		optimistic_restore(sess, ablateckpt.model_checkpoint_path, tf.get_default_graph())
 	print("Statistics restored")
-	#with tf.variable_scope("", reuse= True):
-	#	shape = tf.get_variable("ABL/shape_"+layerNames[0]+str(layerIndexes[0]), 1)
-	#print("SHAPE")
-	#shape = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="ABL/shape_"+layerNames[0]+str(layerIndexes[0]))[0]
 
-	
-	ms = []
 	# Gather statistics
-	for k in range(1000):
+	# How much statistics do we need? Preferably a lot :)
+	length = 1000
+	bar = progressbar.ProgressBar(maxval=length, \
+		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+	bar.start()
+	for k in range(length):
 		for name in layerNames:
 			for i in layerIndexes:
-				print(k)
-				sess.run(sum2[name][i])
-				ms.append(sess.run(means[name][i])[0])
-				sess.run(variations[name][i])
-				sess.run(counters[name][i])
-
-
-	#mean = sess.run(means['dilated_stack'][3])
-	#print(np.shape(mean))
-
-	plt.plot(ms)
-	plt.show()
+				act = sess.run(activations[name][i])
+				sess.run([sum2saveop[name][i], meanssaveop[name][i], counterssaveop[name][i]], feed_dict={activations[name][i] : act})
+				sess.run(variationssaveop[name][i])
+		bar.update(k+1)
+	bar.finish()
 
 	model_name = 'ablate.ckpt'
 	checkpoint_path = os.path.join(ablatelogs, model_name)
@@ -607,17 +691,20 @@ def train(coord, G, D, loader, fw):
 if __name__ == "__main__":
 	args = get_arguments()
 	logdir = args.logdir
-	modes = ["Generate", "FeatureVis", "Train", "Ablate", "Investigate"]
-	mode = modes[0]
+	#			0			1				2		3			4			5
+	modes = ["Generate", "FeatureVis", "Train", "Ablate", "Investigate", "histogram"]
+	mode = modes[4]
 
 	if mode == modes[0]: #Generate
 		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[1]: # FeatureVis
 		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
-		ablate(['dilated_stack'], [0]);
+		ablate(['dilated_stack'], [0,1,2,5]);
 	elif mode == modes[4]: #INVESTIGATE
-		investigate(['dilated_stack'], [0])
+		investigate(['dilated_stack'], [5])
+	elif mode == modes[5]: #HISTOGRAMS
+		create_histograms(['dilated_stack'], [0,1,2,5])
 	elif mode == modes[2]: #TRAIN
 		fw = tf.summary.FileWriter(logdir)
 		coord = tf.train.Coordinator()

@@ -133,13 +133,14 @@ class Visualizer():
 		plt.imshow(np.array(ffts).transpose(), origin='lower')
 		#plt.scatter(range(len(maxFreqs)), maxFreqs, s=0.1, c="red")
 		plt.show()
-		print(vis.detectNote(ffts[256], duration))
+		print(self.detectNote(ffts[256], duration))
 
 	def testDetector(self, file, sar = None, time=1):
 		audio, sr = self.loadAudio(file, sar)
+		#librosa.output.write_wav("Generated/gangenwave.wav", audio, sr, norm=True, dtype=np.int16)
 		sl = int(sr*time)
 		p = pyaudio.PyAudio()
-		w = wave.open(file)
+		w = wave.open(file, 'rb')
 		stream = p.open(format=p.get_format_from_width(w.getsampwidth()),
 			channels=w.getnchannels(),
 			rate=w.getframerate(),
@@ -153,7 +154,10 @@ class Visualizer():
 			# writing to the stream is what *actually* plays the sound.
 			stream.write(data)
 			data = w.readframes(sl)
-			note, amp = self.detectNote(np.log(np.abs(np.fft.rfft(np.blackman(sl)*audio[i:i+sl])) + 1e-5), time) # Move this to the detect note function
+			le = len(audio[i:i+sl])
+			if le < 1:
+				break
+			note, amp = self.detectNote(np.log(np.abs(np.fft.rfft(np.blackman(le)*audio[i:i+sl])) + 1e-5), time) # Move this to the detect note function
 			if prevNote != note and amp > 1.5:
 				print("note: %s, amp %0.4f"%(note, amp))
 				prevNote = note
@@ -181,9 +185,10 @@ class Visualizer():
 if __name__ == "__main__":
 	vis = Visualizer(2**16)
 	#vis.visAudio("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--2.wav", dynamicSl = True, time = 0.02)
-	vis.visAudio("D:\\MAESTRO\\Generated\\gangen.wav", dynamicSl = True, time=0.02)
+	#vis.visAudio("D:\\MAESTRO\\Generated\\gangen.wav", dynamicSl = True, time=0.02)
 	#vis.visAudio("D:\\MAESTRO\\Generated\\visualizedilated_stack5.wav", dynamicSl = True, time=0.02)
 	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
 	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
 	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
+	vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.05)
 
