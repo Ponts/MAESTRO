@@ -121,7 +121,8 @@ class Visualizer():
 		audio, sr = librosa.load(file, sar, mono = True)
 		return audio, sr
 
-	def detectNote(self, ft, duration):
+	def detectNote(self, audio, duration):
+		ft = np.log(np.abs(np.fft.rfft(np.blackman(len(audio))*audio)) + 1e-5)
 		amp = np.max(ft)
 		freq = np.argmax(ft)/duration
 		bestDist = freq
@@ -145,22 +146,6 @@ class Visualizer():
 		plt.plot(audio[:5117])
 		plt.show()
 		return
-		length = len(audio)
-		duration = (float(sl)/float(sr))
-		i = 0
-		#print(self.sampleLength/sr)
-		print("Time duration per sample: %0.4f seconds"%(duration))
-		i = 0
-		ffts = []
-		maxFreqs = []
-		while i < length - sl:
-			ffts.append(np.log(np.abs(np.fft.rfft(audio[i:i+sl])) + 1e-5))
-			maxFreqs.append(np.argmax(ffts[-1])/duration)
-			i += int(sl/2)
-		plt.imshow(np.array(ffts).transpose(), origin='lower')
-		#plt.scatter(range(len(maxFreqs)), maxFreqs, s=0.1, c="red")
-		plt.show()
-		print(self.detectNote(ffts[256], duration))
 
 	def testDetector(self, file, sar = None, time=1):
 		audio, sr = self.loadAudio(file, sar)
@@ -184,8 +169,8 @@ class Visualizer():
 			le = len(audio[i:i+sl])
 			if le < 1:
 				break
-			note, amp = self.detectNote(np.log(np.abs(np.fft.rfft(np.blackman(le)*audio[i:i+sl])) + 1e-5), time) # Move this to the detect note function
-			if prevNote != note and amp > 1.5:
+			note, amp = self.detectNote(audio[i:i+sl], time) # Move this to the detect note function
+			if prevNote != note and amp > 1.:
 				print("note: %s, amp %0.4f"%(note, amp))
 				prevNote = note
 			i += sl
@@ -217,7 +202,7 @@ class Visualizer():
 		plt.figure(figsize=(10, 4))
 		librosa.display.specshow(librosa.power_to_db(S,
 													ref=np.max),
-													y_axis='mel', fmax=sr,
+													y_axis='mel', fmax=sr/2,
 													x_axis='time')
 		plt.colorbar(format='%+2.0f dB')
 		plt.title(title)
@@ -234,8 +219,8 @@ if __name__ == "__main__":
 	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
 	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
 	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
-	#vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.05)
-	vis.mel_spectogram("D:\\MAESTRO\\Generated\\firstModel\\1secGAN998849.wav", 16000, title="Generated music")
-	vis.mel_spectogram("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav", 16000, title="Real music")
+	vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.05)
+	#vis.mel_spectogram("D:\\MAESTRO\\Generated\\firstModel\\1secGAN998849.wav", 16000, title="Generated music")
+	#vis.mel_spectogram("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav", 16000, title="Real music")
 	plt.show()
 

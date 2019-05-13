@@ -12,7 +12,7 @@ import librosa
 import time
 import argparse
 import matplotlib.pyplot as plt
-import visualizer
+import visualizer as visul
 
 
 logdir = "./tfb_logs/"
@@ -73,7 +73,6 @@ def save(saver, sess, logdir, step):
 	print(' Done.')
 
 def generate(length, conditionOn = None):
-	filename="generated"
 	sess = tf.Session()
 	sr = g.options["sample_rate"]
 
@@ -124,13 +123,13 @@ def generate(length, conditionOn = None):
 		audio, sr = librosa.load(conditionOn, g.options["sample_rate"], mono=True)
 		start = np.random.randint(0,len(audio)-Generator.receptive_field)
 		fakey = audio[start:start+Generator.receptive_field]
-		audio_start = fakey
+		#audio_start = fakey
 		#fakey = sess.run(audio)
 		#generated = fakey.tolist()
 	else:
 		fakey = [0.0] * (Generator.receptive_field-1)
 		fakey.append(np.random.uniform())
-		audio_start=[]
+		#audio_start=[]
 	noise = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
 
 	# REMOVE THIS LATER
@@ -280,7 +279,8 @@ def softmax(x, ax=2):
 	return ex / np.sum(ex, axis=ax, keepdims=True)
 
 
-def investigate(layerNames, layerIndexes):
+def investigate(layerNames, layerIndexes, conditionOn):
+	vis = visul.Visualizer(2*16)
 	means = {}
 	variations = {}
 	ablations = {}
@@ -288,7 +288,7 @@ def investigate(layerNames, layerIndexes):
 	sess = tf.Session()
 	to_restore = {}
 	with tf.variable_scope("GEN/"):
-		Generator = model.WaveNetModel(g.options["batch_size"],
+		Generator = model.WaveNetModel(1,
 			dilations=g.options["dilations"],
 			filter_width=g.options["filter_width"],
 			residual_channels=g.options["residual_channels"],
@@ -305,23 +305,33 @@ def investigate(layerNames, layerIndexes):
 		var.name[:-2]: var for var in tf.global_variables()
 		if not (('state_buffer' in var.name or 'pointer' in var.name) and "GEN/" in var.name) }
 
-	l = loader.AudioReader("maestro-v1.0.0/2017", g.options["sample_rate"], Generator.receptive_field, coord, stepSize=1, sampleSize=g.options["sample_size"], silenceThreshold=0.1)
-	threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-	l.startThreads(sess)
-
 	saver = tf.train.Saver(variables_to_restore)
 	print("Restoring model")
 	ckpt = tf.train.get_checkpoint_state(logdir)
 	saver.restore(sess, ckpt.model_checkpoint_path)
 	print("Model {} restored".format(ckpt.model_checkpoint_path))
 
-	deque = l.deque(g.options["batch_size"])
-	zeros = np.zeros((1,1,g.options["noise_dimensions"]))
+	sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
 	noiseph = tf.placeholder(tf.float32, [1,1,g.options["noise_dimensions"]])
-	encoded = ops.mu_law_encode(deque, g.options["quantization_channels"])
+	encoded = ops.mu_law_encode(sampleph, g.options["quantization_channels"])
+	sample = tf.placeholder(tf.float32)
+
 	one_hot = Generator._one_hot(encoded)
-	noise_vector = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
-	output = Generator._create_network(one_hot, None, noise = noiseph)
+	next_sample = Generator._create_network(one_hot, None, noise = noiseph)
+	arg_maxes = tf.nn.softmax(next_sample, axis=2)
+	decoded = ops.mu_law_decode(sample, g.options["quantization_channels"])
+	#print(np.shape(arg_maxes))
+	# Sampling with argmax atm
+	#intermed = tf.sign(tf.reduce_max(arg_maxes, axis=2, keepdims=True)-arg_maxes)
+	#one_hot = (intermed-1)*(-1)
+	#fake_sample = tf.concat((tf.slice(encoded, [0,1,0], [-1,-1,-1]), appendph),1)
+
+	
+	
+	audio, sr = librosa.load(conditionOn, g.options["sample_rate"], mono=True)
+	start = np.random.randint(0,len(audio)-Generator.receptive_field)
+	fakey = audio[start:start+Generator.receptive_field]
+	noise = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
 
 	for name in layerNames:
 		means[name] = {}
@@ -329,7 +339,7 @@ def investigate(layerNames, layerIndexes):
 		variations[name] = {}
 		for i in layerIndexes:
 			#ablations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros),i)
-			ablations[name][i] = Generator._get_layer_activation(name, i, one_hot, None, noise=zeros)
+			ablations[name][i] = Generator._get_layer_activation(name, i, one_hot, None, noise=noiseph)
 			abl = tf.reduce_mean(ablations[name][i], axis=[0,1])
 			means[name][i] = tf.Variable(tf.zeros(tf.shape(abl)), name="ABL/mean_"+name+str(i))
 			to_restore["ABL/mean_"+name+str(i)] = means[name][i]
@@ -346,29 +356,43 @@ def investigate(layerNames, layerIndexes):
 
 	name = layerNames[0]
 	i = layerIndexes[0]
-	for k in range(100000):
-		sess.run(encoded)
 	
 	limits = means[name][i] + variations[name][i]
 	mask = ablations[name][i] > limits
-	act = sess.run(ablations[name][i])
-	print("variations")
-	print(sess.run(variations[name][i]))
-	print("max activations")
-	print(sess.run(tf.reduce_max(act, axis=[1])))
-	print("mean activations")
-	print(sess.run(tf.reduce_mean(act, axis=[1])))
-	print("limits")
-	print(sess.run(limits))
-	print(np.shape(sess.run(mask))[1])
-	count = tf.reduce_sum(tf.to_float(mask), axis=[1])
-	counted = sess.run(count)
-	print("which activated")
-	print(counted)
-	print(np.shape(counted))
-	#print(np.shape(actcount))
-	#print(actcount)
 
+	
+	fakey = np.reshape(fakey, [1,-1,1])
+	generated = sess.run(encoded, feed_dict={sampleph : fakey})
+	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
+	sl = 100
+	time = sl/g.options["sample_rate"]
+	print(time)
+	length=1000
+	bar = progressbar.ProgressBar(maxval=length, \
+		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
+	bar.start()
+	prevNote = ""
+	counter = 0
+	for k in range(length):
+		act, prediction = sess.run([ablations[name][i], arg_maxes], feed_dict={one_hot : fakey, noiseph : noise})
+		#fakey = sess.run(fake_sample, feed_dict={encoded : fakey, appendph : prediction})
+		newest_sample = prediction[-1,-1,:]
+
+		sample = np.random.choice(
+			np.arange(g.options["quantization_channels"]), p=newest_sample)
+		#sample = np.argmax(newest_sample)			
+		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
+		if counter > sl:
+			counter = 0
+			decoded = sess.run(ops.mu_law_decode(generated[0,-sl:,0], g.options["quantization_channels"]))
+			note, amp = vis.detectNote(decoded, time)
+			print("note: %s, amp %0.4f"%(note, amp))
+			if prevNote != note and amp > 1.:
+				print("note: %s, amp %0.4f"%(note, amp))
+				prevNote = note
+		counter += 1
+		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
+		bar.update(k+1)
 
 
 def get_causal_activations(activations, layerIndex):
@@ -711,16 +735,16 @@ if __name__ == "__main__":
 	logdir = args.logdir
 	#			0			1				2		3			4			5
 	modes = ["Generate", "FeatureVis", "Train", "Ablate", "Investigate", "histogram"]
-	mode = modes[0]
+	mode = modes[4]
 
 	if mode == modes[0]: #Generate
-		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+		generate(16000*3, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[1]: # FeatureVis
 		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
 		ablate(['dilated_stack'], [0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
 	elif mode == modes[4]: #INVESTIGATE
-		investigate(['dilated_stack'], [25])
+		investigate(['dilated_stack'], [25], "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[5]: #HISTOGRAMS
 		create_histograms(['dilated_stack'], [0,1,2,5])
 	elif mode == modes[2]: #TRAIN
