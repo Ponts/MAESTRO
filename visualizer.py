@@ -1,4 +1,4 @@
-import librosa
+import librosa, librosa.display
 import fnmatch
 import os
 import numpy as np
@@ -27,6 +27,21 @@ class Visualizer():
 			30.87 : "B"
 		}'''
 		self.frequencies = {
+			27.5000:'A0',
+			29.1352:'B0b',
+			30.8677:'B0', 
+			32.7032:'C1',
+			34.6478:'C1#',
+			36.7081:'D1',
+			38.8909:'E1b',
+			41.2034:'E1', 
+			43.6535:'F1',
+			46.2493:'F1#',
+			48.9994:'G1',
+			51.9131:'G1#',
+			55.00:'A1',
+			58.2705:'B1b',
+			61.7354:'B1',
 			65.41:'C2', 
 			69.30:'C2#',
 			73.42:'D2',  
@@ -87,7 +102,19 @@ class Visualizer():
 			1760.0:'A6',
 			1865.0:'B6b',
 			1976.0:'B6', 
-			2093.0:'C7'
+			2093.0:'C7',
+			2217.46 : 'C7#',
+			2349.32 : 'D7',
+			2489.02 : 'E7b',
+			2637.02 : 'E7',
+			2793.83 : 'F7',
+			2959.96 : 'F7#',
+			3135.96 : 'G7',
+			3322.44 : 'G7#',
+			3520.00 : 'A7',
+			3729.31 : 'B7b',
+			3951.07 : 'B7',
+			4186.01 : 'C8',
 			} 
 
 	def loadAudio(self, file, sar):
@@ -179,6 +206,23 @@ class Visualizer():
 		print(diff)
 		plt.show()
 
+	def mel_spectogram(self, file, sar, title="Generated"):
+		audio, sr = librosa.load(file, sar)
+		if (len(audio)) > sar:
+			ra = np.random.randint(0,len(audio)-sr)
+			audio = audio[ra:ra+sr]
+		print(len(audio))
+		print(sr)
+		S = librosa.feature.melspectrogram(y=audio, sr=sr)
+		plt.figure(figsize=(10, 4))
+		librosa.display.specshow(librosa.power_to_db(S,
+													ref=np.max),
+													y_axis='mel', fmax=sr,
+													x_axis='time')
+		plt.colorbar(format='%+2.0f dB')
+		plt.title(title)
+		plt.tight_layout()
+		
 			
 
 
@@ -190,5 +234,8 @@ if __name__ == "__main__":
 	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
 	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
 	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
-	vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.05)
+	#vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.05)
+	vis.mel_spectogram("D:\\MAESTRO\\Generated\\firstModel\\1secGAN998849.wav", 16000, title="Generated music")
+	vis.mel_spectogram("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav", 16000, title="Real music")
+	plt.show()
 

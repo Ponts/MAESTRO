@@ -17,7 +17,8 @@ import visualizer
 
 logdir = "./tfb_logs/"
 ablatelogs = "./ablate_logs"
-
+#generatedir="./firstModel/0511ganlosslow--1.4"
+generatedir = "./tfb_logs/"
 def get_arguments():
 	parser = argparse.ArgumentParser(description='WaveNet settings')
 	parser.add_argument('--logdir', type=str, default=logdir,
@@ -99,7 +100,7 @@ def generate(length, conditionOn = None):
 
 	saver = tf.train.Saver(variables_to_restore)
 	print("Restoring model")
-	ckpt = tf.train.get_checkpoint_state(logdir)
+	ckpt = tf.train.get_checkpoint_state(generatedir)
 	saver.restore(sess, ckpt.model_checkpoint_path)
 	print("Model {} restored".format(ckpt.model_checkpoint_path))
 
@@ -149,18 +150,18 @@ def generate(length, conditionOn = None):
 		newest_sample = prediction[-1,-1,:]
 		#Sample from newest_sample
 		#print(newest_sample)
-		np.seterr(divide='ignore')
-		scaled_prediction = np.log(newest_sample) / 0.9#args.temperature
-		scaled_prediction = (scaled_prediction -
-							np.logaddexp.reduce(scaled_prediction))
-		scaled_prediction = np.exp(scaled_prediction)
-		np.seterr(divide='warn')
+		#np.seterr(divide='ignore')
+		#scaled_prediction = np.log(newest_sample) / 0.9#args.temperature
+		#scaled_prediction = (scaled_prediction -
+		#					np.logaddexp.reduce(scaled_prediction))
+		#scaled_prediction = np.exp(scaled_prediction)
+		#np.seterr(divide='warn')
 		#print(np.sum(newest_sample - scaled_prediction))
 		# Prediction distribution at temperature=1.0 should be unchanged after
 		# scaling.
 		#print(np.argmax(scaled_prediction))
 
-		#scaled_prediction = newest_sample
+		scaled_prediction = newest_sample
 
 		sample = np.random.choice(
 			np.arange(g.options["quantization_channels"]), p=scaled_prediction)
@@ -327,7 +328,8 @@ def investigate(layerNames, layerIndexes):
 		ablations[name] = {}
 		variations[name] = {}
 		for i in layerIndexes:
-			ablations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros),i)
+			#ablations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros),i)
+			ablations[name][i] = Generator._get_layer_activation(name, i, one_hot, None, noise=zeros)
 			abl = tf.reduce_mean(ablations[name][i], axis=[0,1])
 			means[name][i] = tf.Variable(tf.zeros(tf.shape(abl)), name="ABL/mean_"+name+str(i))
 			to_restore["ABL/mean_"+name+str(i)] = means[name][i]
@@ -344,13 +346,26 @@ def investigate(layerNames, layerIndexes):
 
 	name = layerNames[0]
 	i = layerIndexes[0]
+	for k in range(100000):
+		sess.run(encoded)
 	
 	limits = means[name][i] + variations[name][i]
 	mask = ablations[name][i] > limits
 	act = sess.run(ablations[name][i])
+	print("variations")
 	print(sess.run(variations[name][i]))
-	print(sess.run(tf.reduce_max(act, axis=[0,1])))
+	print("max activations")
+	print(sess.run(tf.reduce_max(act, axis=[1])))
+	print("mean activations")
+	print(sess.run(tf.reduce_mean(act, axis=[1])))
+	print("limits")
 	print(sess.run(limits))
+	print(np.shape(sess.run(mask))[1])
+	count = tf.reduce_sum(tf.to_float(mask), axis=[1])
+	counted = sess.run(count)
+	print("which activated")
+	print(counted)
+	print(np.shape(counted))
 	#print(np.shape(actcount))
 	#print(actcount)
 
@@ -360,7 +375,7 @@ def get_causal_activations(activations, layerIndex):
 	jump = g.options["dilations"][layerIndex + 1]
 	# shape is batch, time, channel
 	# want to get correct time ones
-	end = tf.shape(activations)[1] - 1
+	end = tf.shape(activations)[1] #- 1
 	indices = tf.range(end, -1, -jump)
 	return tf.gather(activations, indices, axis=1)
 
@@ -509,7 +524,8 @@ def ablate(layerNames, layerIndexes):
 		counterssaveop[name] = {}
 		variationssaveop[name] = {}
 		for i in layerIndexes:
-			activations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i)
+			#activations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i)
+			activations[name][i] = Generator._get_layer_activation(name, i, one_hot, None, noise=zeros)
 			sm[name][i] = tf.reduce_sum(activations[name][i], axis=[0,1])
 			sum2[name][i] = tf.reduce_sum(tf.square(activations[name][i]), axis=[0,1])		
 			batch_size[name][i] = tf.to_float(tf.shape(activations[name][i])[0] + tf.shape(activations[name][i])[1])
@@ -542,10 +558,12 @@ def ablate(layerNames, layerIndexes):
 	if ablateckpt is not None:
 		optimistic_restore(sess, ablateckpt.model_checkpoint_path, tf.get_default_graph())
 	print("Statistics restored")
-
+	# Eat up some so that statistics arent gathered at the beginning
+	for _ in range(1000):
+		sess.run(deque)
 	# Gather statistics
 	# How much statistics do we need? Preferably a lot :)
-	length = 1000
+	length = 10000
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 	bar.start()
@@ -668,10 +686,10 @@ def train(coord, G, D, loader, fw):
 				print("GenLoss:   " + str(gLoss) + ", Step: " + str(step) + ", Time: " + str(dur))
 				print()
 			step += 1
-			if step % 100 == 0:
+			if step % 5000 == 0:
 				summs = sess.run(summaries)
 				fw.add_summary(summs,step)
-			if step % 500 == 0:
+			if step % 5000 == 0:
 				save(saver, sess, logdir, step)
 				
 
@@ -693,16 +711,16 @@ if __name__ == "__main__":
 	logdir = args.logdir
 	#			0			1				2		3			4			5
 	modes = ["Generate", "FeatureVis", "Train", "Ablate", "Investigate", "histogram"]
-	mode = modes[4]
+	mode = modes[0]
 
 	if mode == modes[0]: #Generate
 		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[1]: # FeatureVis
 		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
-		ablate(['dilated_stack'], [0,1,2,5]);
+		ablate(['dilated_stack'], [0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
 	elif mode == modes[4]: #INVESTIGATE
-		investigate(['dilated_stack'], [5])
+		investigate(['dilated_stack'], [25])
 	elif mode == modes[5]: #HISTOGRAMS
 		create_histograms(['dilated_stack'], [0,1,2,5])
 	elif mode == modes[2]: #TRAIN
