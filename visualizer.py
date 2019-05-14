@@ -6,7 +6,9 @@ import random
 import matplotlib.pyplot as plt
 import pyaudio 
 import wave
-
+import math
+from scipy.signal import blackmanharris, fftconvolve
+from matplotlib.mlab import find
 
 
 class Visualizer():
@@ -121,7 +123,39 @@ class Visualizer():
 		audio, sr = librosa.load(file, sar, mono = True)
 		return audio, sr
 
-	def detectNote(self, audio, duration):
+	# See https://github.com/endolith/waveform-analyzer/blob/master/frequency_estimator.py
+	def parabolic(self, f, x): 
+		xv = 1/2. * (f[x-1] - f[x+1]) / (f[x-1] - 2 * f[x] + f[x+1]) + x
+		yv = f[x] - 1/4. * (f[x-1] - f[x+1]) * (xv - x)
+		return (xv, yv)
+	    
+	# See https://github.com/endolith/waveform-analyzer/blob/master/frequency_estimator.py
+	def freq_from_autocorr(self, raw_data_signal, fs):                          
+		corr = fftconvolve(raw_data_signal, raw_data_signal[::-1], mode='full')
+		corr = corr[int(len(corr)/2):]
+		d = np.diff(corr)
+		start = find(d > 0)[0]
+		peak = np.argmax(corr[start:]) + start
+		px, py = self.parabolic(corr, peak)
+		return fs / px
+
+	def loudness(self, chunk):
+		data = np.array(chunk, dtype=float) / 32768.0
+		ms = math.sqrt(np.sum(data ** 2.0) / len(data))
+		if ms < 10e-8: 
+			ms = 10e-8
+		return 10.0 * math.log(ms, 10.0)
+
+	def detectNote(self, audio, sr):
+		freq = self.freq_from_autocorr(audio, sr)
+		bestDist = freq
+		for k, _ in self.frequencies.items():
+			distance = np.abs(freq - k)
+			if distance < bestDist:
+				bestDist = distance
+				bestFreq = k
+		return self.frequencies[bestFreq]
+		'''
 		ft = np.log(np.abs(np.fft.rfft(np.blackman(len(audio))*audio)) + 1e-5)
 		amp = np.max(ft)
 		freq = np.argmax(ft)/duration
@@ -133,6 +167,8 @@ class Visualizer():
 				bestDist = distance
 				bestFreq = k
 		return self.frequencies[bestFreq], amp
+		'''
+
 
 	def visAudio(self, file, sar = None, dynamicSl = False, time = 1):
 		audio, sr = self.loadAudio(file, sar)
@@ -161,19 +197,19 @@ class Visualizer():
 
 		data = w.readframes(sl)
 		i = 0
-		prevNote = "C1"
+		prevNote = ""
 		while data != '':
 			# writing to the stream is what *actually* plays the sound.
 			stream.write(data)
 			data = w.readframes(sl)
-			le = len(audio[i:i+sl])
-			if le < 1:
+			if i+sl >= len(audio):
 				break
-			note, amp = self.detectNote(audio[i:i+sl], time) # Move this to the detect note function
-			if prevNote != note and amp > 1.:
-				print("note: %s, amp %0.4f"%(note, amp))
+			note = self.detectNote(audio[i:i+sl], sr) # Move this to the detect note function
+			loudness = np.abs(self.loudness(audio[i:i+sl]))
+			if loudness < 60.:
+				print("note: %s, amp %0.4f"%(note, loudness))
 				prevNote = note
-			i += sl
+			i += 1
 
 		stream.close()
 
@@ -219,7 +255,7 @@ if __name__ == "__main__":
 	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
 	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
 	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
-	vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.05)
+	vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.2)
 	#vis.mel_spectogram("D:\\MAESTRO\\Generated\\firstModel\\1secGAN998849.wav", 16000, title="Generated music")
 	#vis.mel_spectogram("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav", 16000, title="Real music")
 	plt.show()

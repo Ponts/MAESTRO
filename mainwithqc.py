@@ -13,6 +13,8 @@ import time
 import argparse
 import matplotlib.pyplot as plt
 import visualizer as visul
+import warnings
+warnings.filterwarnings("ignore")
 
 
 logdir = "./tfb_logs/"
@@ -310,13 +312,22 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	ckpt = tf.train.get_checkpoint_state(logdir)
 	saver.restore(sess, ckpt.model_checkpoint_path)
 	print("Model {} restored".format(ckpt.model_checkpoint_path))
-
 	sampleph = tf.placeholder(tf.float32, [1,Generator.receptive_field,1])
+	controlph = tf.placeholder(tf.float32, [1, None, g.options["residual_channels"]])
+	eph = tf.placeholder(tf.float32, [1, None, g.options["residual_channels"]])
 	noiseph = tf.placeholder(tf.float32, [1,1,g.options["noise_dimensions"]])
 	encoded = ops.mu_law_encode(sampleph, g.options["quantization_channels"])
 	sample = tf.placeholder(tf.float32)
+	ablationsholder = {}
+	ablationsholder[layerNames[0]] = {}
+	ablationsholder[layerNames[0]][layerIndexes[0]] = controlph
+	eholder = {}
+	eholder[layerNames[0]] = {}
+	eholder[layerNames[0]][layerIndexes[0]] = eph
 
 	one_hot = Generator._one_hot(encoded)
+	controlled_sample = Generator._create_ablated_network(one_hot, None, ablationsholder, eholder, noise=noiseph)
+	c_arg_maxes = tf.nn.softmax(controlled_sample, axis=2)
 	next_sample = Generator._create_network(one_hot, None, noise = noiseph)
 	arg_maxes = tf.nn.softmax(next_sample, axis=2)
 	decoded = ops.mu_law_decode(sample, g.options["quantization_channels"])
@@ -359,40 +370,79 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	
 	limits = means[name][i] + variations[name][i]
 	mask = ablations[name][i] > limits
-
-	
+	mask_ph = tf.placeholder(tf.bool)
+	causal_ph = tf.placeholder(tf.float32)
+	causal_counter = tf.cast(mask, tf.float32) + causal_ph
+	stillactive = tf.logical_and(mask, mask_ph)
 	fakey = np.reshape(fakey, [1,-1,1])
 	generated = sess.run(encoded, feed_dict={sampleph : fakey})
 	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
-	sl = 100
-	time = sl/g.options["sample_rate"]
-	print(time)
-	length=1000
+	sl = 800
+	length=sl*1+1
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
 	bar.start()
 	prevNote = ""
 	counter = 0
+	act =  sess.run(ablations[name][i], feed_dict={one_hot : fakey, noiseph : noise})
+	print(np.shape(act))
+	causal_count =  sess.run(tf.cast(tf.zeros_like(mask), tf.bool), feed_dict={ablations[name][i] : act})
 	for k in range(length):
 		act, prediction = sess.run([ablations[name][i], arg_maxes], feed_dict={one_hot : fakey, noiseph : noise})
 		#fakey = sess.run(fake_sample, feed_dict={encoded : fakey, appendph : prediction})
 		newest_sample = prediction[-1,-1,:]
-
+		newmask = sess.run(mask, feed_dict={ablations[name][i] : act})
+		causal_count = sess.run(causal_counter, feed_dict={causal_ph : causal_count,  mask:newmask})
+		#print(sess.run(tf.reduce_sum(causal_count, axis=[0,1])))
 		sample = np.random.choice(
 			np.arange(g.options["quantization_channels"]), p=newest_sample)
 		#sample = np.argmax(newest_sample)			
 		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
-		if counter > sl:
-			counter = 0
+		if counter % sl == 0 and counter != 0:
 			decoded = sess.run(ops.mu_law_decode(generated[0,-sl:,0], g.options["quantization_channels"]))
-			note, amp = vis.detectNote(decoded, time)
+			note = vis.detectNote(decoded, g.options["sample_rate"])
+			amp = vis.loudness(decoded)
 			print("note: %s, amp %0.4f"%(note, amp))
-			if prevNote != note and amp > 1.:
-				print("note: %s, amp %0.4f"%(note, amp))
+			if prevNote != note: #and amp > 1.:
+				#print("note: %s, amp %0.4f"%(note, amp))
 				prevNote = note
+				break
 		counter += 1
 		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
 		bar.update(k+1)
+	bar.finish()
+	causal_count = causal_count / length*4
+	print(sess.run(tf.reduce_sum(causal_count, axis=[0,1])))
+	print(np.shape(act))
+	ablat = sess.run(tf.tile(tf.reshape(limits, [1,1,-1]), [1,2047,1]))
+	print("Target == " + note)
+	target=note
+	# Get new bit of audio for the generator
+	start = np.random.randint(0,len(audio)-Generator.receptive_field)
+	fakey = audio[start:start+Generator.receptive_field]
+	fakey = np.reshape(fakey, [1,-1,1])
+	generated = sess.run(encoded, feed_dict={sampleph : fakey})
+	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
+	counter = 0
+	for k in range(length*20):
+		prediction = sess.run(c_arg_maxes, feed_dict={one_hot : fakey, ablationsholder[name][i] : ablat, eholder[name][i] : causal_count, noiseph : noise})
+		newest_sample = prediction[-1,-1,:]
+		sample = np.random.choice(
+			np.arange(g.options["quantization_channels"]), p=newest_sample)
+		#sample = np.argmax(newest_sample)			
+		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
+		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
+		if counter % sl == 0 and counter != 0:
+			decoded = sess.run(ops.mu_law_decode(generated[0,-sl:,0], g.options["quantization_channels"]))
+			note = vis.detectNote(decoded, g.options["sample_rate"])
+			tamp = vis.loudness(decoded)
+			print("note: %s, amp %0.4f"%(note, tamp))
+		counter += 1
+
+	generated=np.reshape(generated,[-1])
+	decoded = sess.run(ops.mu_law_decode(generated, g.options["quantization_channels"]))
+	generated = np.array(decoded)
+	librosa.output.write_wav("Generated/investigate.wav", generated, sr, norm=True)
 
 
 def get_causal_activations(activations, layerIndex):
@@ -738,13 +788,13 @@ if __name__ == "__main__":
 	mode = modes[4]
 
 	if mode == modes[0]: #Generate
-		generate(16000*3, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+		generate(16000*1, "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[1]: # FeatureVis
 		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
-		ablate(['dilated_stack'], [0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
+		ablate(['dilated_stack'], [29]);#[0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
 	elif mode == modes[4]: #INVESTIGATE
-		investigate(['dilated_stack'], [25], "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+		investigate(['dilated_stack'], [29], "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[5]: #HISTOGRAMS
 		create_histograms(['dilated_stack'], [0,1,2,5])
 	elif mode == modes[2]: #TRAIN

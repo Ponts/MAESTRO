@@ -5,7 +5,7 @@ options = {
 						1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
 						1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
 						1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
-		"residual_channels": 128,
+		"residual_channels": 512,
 		"dilation_channels": 32,
 		"quantization_channels": 256,
 		#"skip_channels": 512,

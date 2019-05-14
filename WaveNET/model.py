@@ -337,7 +337,7 @@ class WaveNetModel(object):
         return skip_contribution, input_batch + transformed, out
 
     def _create_ablated_dilation_layer(self, input_batch, layer_index, dilation,
-                               global_condition_batch, output_width, ablation):
+                               global_condition_batch, output_width, ablation, e):
         '''Creates a single causal dilated convolution layer.
         Args:
              input_batch: Input to the dilation layer.
@@ -387,9 +387,15 @@ class WaveNetModel(object):
             conv_filter = tf.add(conv_filter, filter_bias)
             conv_gate = tf.add(conv_gate, gate_bias)
 
-        out = tf.tanh(conv_filter) * tf.sigmoid(conv_gate)
-        out = out * ablation
+        # Set to ablation method
+        #which = tf.cast(ablation < 0, tf.float32 ) # Which to take from normal out
+        #out = tf.tanh(conv_filter) * tf.sigmoid(conv_gate)
+        #out = tf.multiply(out, which)
+        #out = out + ablation
 
+        #interpolate between
+        out = (1-e)*(tf.tanh(conv_filter) * tf.sigmoid(conv_gate))
+        out = out + e*ablation
         # The 1x1 conv to produce the residual output
         weights_dense = variables['dense']
         transformed = tf.nn.conv1d(
@@ -503,7 +509,7 @@ class WaveNetModel(object):
                         current_layer, layer_index, dilation,
                         global_condition_batch, output_width)
                     if name == 'dilated_stack' and index == layer_index:
-                        return out
+                        return out  # HERE
                     outputs.append(output)
 
         with tf.name_scope('postprocessing'):
@@ -543,7 +549,7 @@ class WaveNetModel(object):
 
     # Ablation is a dict containing a mask for the given input
     # Implemented are ablation['dilated_stack'][index]
-    def _create_ablated_network(self, input_batch, global_condition_batch, ablation, noise = None):
+    def _create_ablated_network(self, input_batch, global_condition_batch, ablation, e, noise = None):
         '''Construct the WaveNet network.'''
         outputs = []
         current_layer = input_batch
@@ -558,10 +564,10 @@ class WaveNetModel(object):
             for layer_index, dilation in enumerate(self.dilations):
                 with tf.name_scope('layer{}'.format(layer_index)):
                     # If the ablation contains the layer, use the ablation. Else do a normal forward pass
-                    if ['dilated_stack'] in ablation and layer_index in ablation['dilated_stack']: #len(ablation['dilated_stack']) < layer_index and layer_index >= 0:
+                    if 'dilated_stack' in ablation and layer_index in ablation['dilated_stack']: #len(ablation['dilated_stack']) < layer_index and layer_index >= 0:
                         output, current_layer, _ = self._create_ablated_dilation_layer(
                             current_layer, layer_index, dilation,
-                            global_condition_batch, output_width, ablation['dilated_stack'][layer_index])
+                            global_condition_batch, output_width, ablation['dilated_stack'][layer_index], e['dilated_stack'][layer_index])
                     else:
                         output, current_layer, _ = self._create_dilation_layer(
                             current_layer, layer_index, dilation,
