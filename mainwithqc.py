@@ -14,7 +14,6 @@ import argparse
 import matplotlib.pyplot as plt
 import visualizer as visul
 import warnings
-warnings.filterwarnings("ignore")
 
 
 logdir = "./tfb_logs/"
@@ -377,7 +376,7 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	fakey = np.reshape(fakey, [1,-1,1])
 	generated = sess.run(encoded, feed_dict={sampleph : fakey})
 	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
-	sl = 800
+	sl = 1600
 	length=sl*1+1
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
@@ -414,9 +413,10 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	causal_count = causal_count / length*4
 	print(sess.run(tf.reduce_sum(causal_count, axis=[0,1])))
 	print(np.shape(act))
-	ablat = sess.run(tf.tile(tf.reshape(limits, [1,1,-1]), [1,2047,1]))
+	ablat = sess.run(tf.tile(tf.reshape(limits, [1,1,-1]), [1,np.shape(act)[1],1]))
 	print("Target == " + note)
 	target=note
+	target_freq = vis.getFreq(target)
 	# Get new bit of audio for the generator
 	start = np.random.randint(0,len(audio)-Generator.receptive_field)
 	fakey = audio[start:start+Generator.receptive_field]
@@ -435,8 +435,9 @@ def investigate(layerNames, layerIndexes, conditionOn):
 		if counter % sl == 0 and counter != 0:
 			decoded = sess.run(ops.mu_law_decode(generated[0,-sl:,0], g.options["quantization_channels"]))
 			note = vis.detectNote(decoded, g.options["sample_rate"])
+			note_freq =vis.getFreq(note)
 			tamp = vis.loudness(decoded)
-			print("note: %s, amp %0.4f"%(note, tamp))
+			print("note: %s, amp %0.4f, freq error (abs): %0.4f"%(note, tamp, np.abs(target_freq-note_freq)))
 		counter += 1
 
 	generated=np.reshape(generated,[-1])
@@ -792,9 +793,9 @@ if __name__ == "__main__":
 	elif mode == modes[1]: # FeatureVis
 		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
-		ablate(['dilated_stack'], [29]);#[0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
+		ablate(['dilated_stack'], [19]);#[0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
 	elif mode == modes[4]: #INVESTIGATE
-		investigate(['dilated_stack'], [29], "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+		investigate(['dilated_stack'], [19], "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
 	elif mode == modes[5]: #HISTOGRAMS
 		create_histograms(['dilated_stack'], [0,1,2,5])
 	elif mode == modes[2]: #TRAIN

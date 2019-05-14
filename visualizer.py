@@ -119,17 +119,23 @@ class Visualizer():
 			4186.01 : 'C8',
 			} 
 
+	def getFreq(self, note):
+		for k, n in self.frequencies.items():
+			if n == note:
+				return k
+		return -1
+
 	def loadAudio(self, file, sar):
 		audio, sr = librosa.load(file, sar, mono = True)
 		return audio, sr
 
-	# See https://github.com/endolith/waveform-analyzer/blob/master/frequency_estimator.py
+	# https://github.com/endolith/waveform-analyzer/blob/master/frequency_estimator.py
 	def parabolic(self, f, x): 
 		xv = 1/2. * (f[x-1] - f[x+1]) / (f[x-1] - 2 * f[x] + f[x+1]) + x
 		yv = f[x] - 1/4. * (f[x-1] - f[x+1]) * (xv - x)
 		return (xv, yv)
 	    
-	# See https://github.com/endolith/waveform-analyzer/blob/master/frequency_estimator.py
+	# https://github.com/endolith/waveform-analyzer/blob/master/frequency_estimator.py
 	def freq_from_autocorr(self, raw_data_signal, fs):                          
 		corr = fftconvolve(raw_data_signal, raw_data_signal[::-1], mode='full')
 		corr = corr[int(len(corr)/2):]
