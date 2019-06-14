@@ -8,8 +8,11 @@ import pyaudio
 import wave
 import math
 from scipy.signal import blackmanharris, fftconvolve
+from scipy.spatial.distance import directed_hausdorff, euclidean
 from matplotlib.mlab import find
-
+import similaritymeasures
+from fastdtw import fastdtw
+from dtw import dtw
 
 class Visualizer():
 	def __init__(self, sl = 1024):
@@ -236,12 +239,12 @@ class Visualizer():
 	def mel_spectogram(self, file, sar, title="Generated"):
 		audio, sr = librosa.load(file, sar)
 		if (len(audio)) > sar:
-			ra = np.random.randint(0,len(audio)-sr)
-			audio = audio[ra:ra+sr]
-		print(len(audio))
-		print(sr)
+			#ra = np.random.randint(0,len(audio)-sr)
+			audio = audio[-sar:]
+		#print(len(audio))
+		#print(sr)
 		S = librosa.feature.melspectrogram(y=audio, sr=sr)
-		plt.figure(figsize=(10, 4))
+		fig = plt.figure(figsize=(10, 4))
 		librosa.display.specshow(librosa.power_to_db(S,
 													ref=np.max),
 													y_axis='mel', fmax=sr/2,
@@ -250,7 +253,80 @@ class Visualizer():
 		plt.title(title)
 		plt.tight_layout()
 		
-			
+	def check_similarity(self, song1, option1, option2, sar=16000):
+		song1, sr1 = self.loadAudio(song1, sar)
+		opt1, sr2 = self.loadAudio(option1, sar)
+		opt2, sr3 = self.loadAudio(option2, sar)
+		x = range(0,5117)
+		song1 = [x, song1[-5117:]]
+		opt1 = [x, opt1[-5117:]]
+		opt2 = [x, opt2[-5117:]]
+
+		nsong1 = np.array(song1).T
+		nopt1 = np.array(opt1).T
+		nopt2 = np.array(opt2).T
+
+		print(np.shape(nopt1))
+
+		dtw1, d = similaritymeasures.dtw(opt1, song1)
+		dtw2, d = similaritymeasures.dtw(opt2, song1)
+		#print("DTW")
+		#print(dtw1, dtw2)
+
+		#dtw1, d = fastdtw(nopt1, nsong1, dist=euclidean)
+		#dtw2, d = fastdtw(nopt2, nsong1, dist=euclidean)
+		#print("fastDTW")
+		#print(dtw1, dtw2)
+		#dtw1 = similaritymeasures.frechet_dist(nopt1, nsong1)
+		#dtw2 = similaritymeasures.frechet_dist(nopt2, nsong1)
+		#print("fastDTW")
+		#print(dtw1, dtw2)
+
+		#dh1, _, _ = directed_hausdorff(nopt1, nsong1)
+		#dh2, _, _ = directed_hausdorff(nopt2, nsong1)
+		#print("Directed Hausdorff")
+		#print(dh1, dh2)
+
+		#dtw1 = similaritymeasures.pcm(nopt1, nsong1)
+		#dtw2 = similaritymeasures.pcm(nopt2, nsong1)
+	
+		print(dtw1, dtw2)
+
+		return dtw1, dtw2
+
+	def compare_frechet(self):
+		x = np.arange(0, 10*np.pi, np.pi/10)
+		s1 = np.cos(x)
+		s2 = np.cos(x + np.pi/2)
+
+
+		plt.plot(s1)
+		plt.plot(s2)
+		plt.show()
+
+		s1 = np.array([x, s1]).T
+		s2 = np.array([x, s2]).T
+		dist,_ = similaritymeasures.dtw(s1, s2)
+
+
+		print(dist)
+
+	def get_scores(self):
+		uncons = []
+		cons = []
+		for index in range(1,100):
+			uncon, con = vis.check_similarity("D:\\MAESTRO\\Generated\\Comparision\\to_copy_"+str(index)+".wav", "D:\\MAESTRO\\Generated\\Comparision\\uncontrolled_"+str(index)+".wav","D:\\MAESTRO\\Generated\\Comparision\\controlled_"+str(index)+".wav")
+			uncons.append(uncon)
+			cons.append(con)
+		print("Controlled score:")
+		print(str(np.mean(cons)) + "+-" + str(np.std(cons)))
+		print("Not Controlled score:")
+		print(str(np.mean(uncons)) + "+-" + str(np.std(uncons)))
+
+	def plotthat(self):
+		con = [19.69274514118228, 22.668568919557394, ]
+		uncon = [22.359309147870928, 18.86512833495965, ]
+
 
 
 if __name__ == "__main__":
@@ -261,8 +337,46 @@ if __name__ == "__main__":
 	#vis.visAudio("D:\\normal_wavenet\\generate.wav", dynamicSl = True, time=0.02)
 	#vis.testDetector("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_047_PIANO047_MID--AUDIO-split_07-06-17_Piano-e_2-04_wav--4.wav", time = 0.05)
 	#vis.compare("D:\\MAESTRO\\Generated\\gangen.wav", "D:\\MAESTRO\\Generated\\bla.wav")
-	vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.2)
-	#vis.mel_spectogram("D:\\MAESTRO\\Generated\\firstModel\\1secGAN998849.wav", 16000, title="Generated music")
-	#vis.mel_spectogram("D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_041_PIANO041_MID--AUDIO-split_07-06-17_Piano-e_1-01_wav--1.wav", 16000, title="Real music")
+	#vis.testDetector("D:\\MAESTRO\\Generated\\gangen2.wav", time = 0.2)
+	#vis.mel_spectogram("D:\\MAESTRO\\Generated\\investigate.wav", 16000, title="Generated music")
+	#vis.mel_spectogram("D:\\MAESTRO\\Generated\\to_copy.wav", 16000, title="Real music")
+	
+	#index = 
+	'''
+	for index in range(1, 75):
+		vis.mel_spectogram("D:\\MAESTRO\\Generated\\Comparision\\controlled_"+str(index)+".wav", 16000, title="")
+		plt.savefig('C:\\Users\\pontu\\OneDrive\\Bilder\\Thesis Results\\'+str(index) + '_c', bbox_inches='tight')
+		plt.close()
+		vis.mel_spectogram("D:\\MAESTRO\\Generated\\Comparision\\uncontrolled_"+str(index)+".wav", 16000, title="")
+		plt.savefig('C:\\Users\\pontu\\OneDrive\\Bilder\\Thesis Results\\'+str(index) + '_nc', bbox_inches='tight')
+		plt.close()
+		vis.mel_spectogram("D:\\MAESTRO\\Generated\\Comparision\\to_copy_"+str(index)+".wav", 16000, title="")
+		plt.savefig('C:\\Users\\pontu\\OneDrive\\Bilder\\Thesis Results\\'+str(index) + '_copy', bbox_inches='tight')
+		plt.close()
+	'''
+	#plt.show()
+	con = []
+	uncon = []
+	for index in range(200,212):
+		
+		u, c= vis.check_similarity("D:\\MAESTRO\\Generated\\Comparision\\to_copy_"+str(index)+".wav", "D:\\MAESTRO\\Generated\\Comparision\\uncontrolled_"+str(index)+".wav","D:\\MAESTRO\\Generated\\Comparision\\controlled_"+str(index)+".wav")
+		con.append(c)
+		uncon.append(u)
+
+	xs = [0]
+	for i in range(len(con)-1):
+		xs.append(xs[i] + 5117.0/16000.0)
+
+	plt.plot(xs, con, label="Controlled")
+	plt.plot(xs, uncon, label="Not controlled")
+	plt.legend()
+	plt.xlabel("Time")
+	plt.ylabel("DTW")
 	plt.show()
 
+
+	#vis.get_scores()
+	#vis.compare_frechet()
+
+	#vis.mel_spectogram("D:\\MAESTRO\\Generated\\c3#controlledcausalifALLuselatestactlayer29.wav", 16000, title="")
+	#plt.show()

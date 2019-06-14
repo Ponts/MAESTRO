@@ -280,7 +280,7 @@ def softmax(x, ax=2):
 	return ex / np.sum(ex, axis=ax, keepdims=True)
 
 
-def investigate(layerNames, layerIndexes, conditionOn):
+def investigate(layerNames, layerIndexes, conditionOn, save_index=6):
 	vis = visul.Visualizer(2*16)
 	means = {}
 	variations = {}
@@ -337,10 +337,13 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	#fake_sample = tf.concat((tf.slice(encoded, [0,1,0], [-1,-1,-1]), appendph),1)
 
 	
-	
+	# Start audio
 	audio, sr = librosa.load(conditionOn, g.options["sample_rate"], mono=True)
-	start = np.random.randint(0,len(audio)-Generator.receptive_field)
-	fakey = audio[start:start+Generator.receptive_field]
+	# This should be previously generated part of the experiment
+	#start = np.random.randint(0,len(audio)-Generator.receptive_field)
+	#fakey = audio[start:start+Generator.receptive_field]
+	fakey = audio[-Generator.receptive_field:]
+	print(np.shape(fakey))
 	noise = np.random.normal(g.options["noise_mean"], g.options["noise_variance"], size=g.options["noise_dimensions"]).reshape(1,1,-1)
 
 	for name in layerNames:
@@ -376,7 +379,7 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	fakey = np.reshape(fakey, [1,-1,1])
 	generated = sess.run(encoded, feed_dict={sampleph : fakey})
 	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
-	sl = 1600
+	sl = Generator.receptive_field
 	length=sl*1+1
 	bar = progressbar.ProgressBar(maxval=length, \
 		widgets=[progressbar.Bar('=', '[', ']'), ' ', progressbar.Percentage()])
@@ -410,7 +413,12 @@ def investigate(layerNames, layerIndexes, conditionOn):
 		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
 		bar.update(k+1)
 	bar.finish()
-	causal_count = causal_count / length*4
+	save_ctrl=np.reshape(generated,[-1])[-sl:]
+	decoded = sess.run(ops.mu_law_decode(save_ctrl, g.options["quantization_channels"]))
+	save_ctrl = np.array(decoded)
+	librosa.output.write_wav("Generated/Comparision/to_copy_"+str(save_index)+".wav", save_ctrl, sr, norm=True)
+
+	causal_count = causal_count / length
 	print(sess.run(tf.reduce_sum(causal_count, axis=[0,1])))
 	print(np.shape(act))
 	ablat = sess.run(tf.tile(tf.reshape(limits, [1,1,-1]), [1,np.shape(act)[1],1]))
@@ -418,20 +426,33 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	target=note
 	target_freq = vis.getFreq(target)
 	# Get new bit of audio for the generator
-	start = np.random.randint(0,len(audio)-Generator.receptive_field)
-	fakey = audio[start:start+Generator.receptive_field]
+	#start = np.random.randint(0,len(audio)-Generator.receptive_field)
+	#fakey = audio[start:start+Generator.receptive_field]
+	fakey = audio[-Generator.receptive_field:]
 	fakey = np.reshape(fakey, [1,-1,1])
 	generated = sess.run(encoded, feed_dict={sampleph : fakey})
+	uncontrolled_generated = generated
 	fakey = sess.run(one_hot, feed_dict={sampleph : fakey})
+	uncontrolled = fakey
 	counter = 0
-	for k in range(length*20):
-		prediction = sess.run(c_arg_maxes, feed_dict={one_hot : fakey, ablationsholder[name][i] : ablat, eholder[name][i] : causal_count, noiseph : noise})
+	np.random.seed() # Set seed
+	for k in range(length):
+		c_prediction = sess.run(c_arg_maxes, feed_dict={one_hot : fakey, ablationsholder[name][i] : ablat, eholder[name][i] : causal_count, noiseph : noise})
+		prediction = sess.run(arg_maxes, feed_dict={one_hot : uncontrolled, noiseph : noise})
+
+		c_newest_sample = c_prediction[-1,-1,:]
 		newest_sample = prediction[-1,-1,:]
+
+		c_sample = np.random.choice(
+			np.arange(g.options["quantization_channels"]), p=c_newest_sample)
 		sample = np.random.choice(
 			np.arange(g.options["quantization_channels"]), p=newest_sample)
+
 		#sample = np.argmax(newest_sample)			
-		generated = np.append(generated, np.reshape(sample,[1,1,1]), 1)
+		generated = np.append(generated, np.reshape(c_sample,[1,1,1]), 1)
+		uncontrolled_generated = np.append(uncontrolled_generated, np.reshape(sample,[1,1,1]), 1)
 		fakey = sess.run(one_hot, feed_dict={encoded : generated[:,-Generator.receptive_field:,:]})
+		uncontrolled = sess.run(one_hot, feed_dict={encoded : uncontrolled_generated[:,-Generator.receptive_field:,:]})
 		if counter % sl == 0 and counter != 0:
 			decoded = sess.run(ops.mu_law_decode(generated[0,-sl:,0], g.options["quantization_channels"]))
 			note = vis.detectNote(decoded, g.options["sample_rate"])
@@ -443,7 +464,13 @@ def investigate(layerNames, layerIndexes, conditionOn):
 	generated=np.reshape(generated,[-1])
 	decoded = sess.run(ops.mu_law_decode(generated, g.options["quantization_channels"]))
 	generated = np.array(decoded)
-	librosa.output.write_wav("Generated/investigate.wav", generated, sr, norm=True)
+	librosa.output.write_wav("Generated/Comparision/controlled_"+str(save_index)+".wav", generated, sr, norm=True)
+
+	uncontrolled_generated=np.reshape(uncontrolled_generated,[-1])
+	u_decoded = sess.run(ops.mu_law_decode(uncontrolled_generated, g.options["quantization_channels"]))
+	uncontrolled_generated = np.array(u_decoded)
+	librosa.output.write_wav("Generated/Comparision/uncontrolled_"+str(save_index)+".wav", uncontrolled_generated, sr, norm=True)
+	sess.close()
 
 
 def get_causal_activations(activations, layerIndex):
@@ -503,8 +530,8 @@ def create_histograms(layerNames, layerIndexes):
 		for i in layerIndexes:
 			#activations[name][i] = get_causal_activations(Generator._get_layer_activation(name, i, one_hot, None, noise=zeros), i)
 			activations[name][i] = Generator._get_layer_activation(name, i, one_hot, None, noise=zeros)
-			for l in range(g.options["residual_channels"]):
-				tf.summary.histogram(name + "_layer_" + str(i) + "_unit_" + str(0), tf.reshape(activations[name][i][:,:,l], (-1,1)))
+			#for l in range(g.options["residual_channels"]):
+			#	tf.summary.histogram(name + "_layer_" + str(i) + "_unit_" + str(0), tf.reshape(activations[name][i][:,:,l], (-1,1)))
 			#units = tf.shape(activations[name][i])[2]
 			#def add(a):
 			#	tf.summary.histogram(name + "_layer_" + str(i) + "_unit_" + str(a), activations[name][i][:,:,a])
@@ -515,18 +542,22 @@ def create_histograms(layerNames, layerIndexes):
 
 			#tf.while_loop(stop, add, [0])
 				
-	summaries = tf.summary.merge_all()
-	#acts = []
+	#summaries = tf.summary.merge_all()
+	acts = []
+	for i in range(500):
+		sess.run(deque)
 	for i in range(1000):
-		summ = sess.run(summaries)
-		#act = sess.run(activations['dilated_stack'][0])[0,:,0]
+		#summ = sess.run(summaries)
+		act = sess.run(activations['dilated_stack'][layerIndexes[0]])[0,:,13]
 		#print(act)
 		print(i/1000)
-		#acts = np.concatenate((acts, act))
-		writer.add_summary(summ, global_step = 0)
+		acts = np.concatenate((acts, act))
+		#writer.add_summary(summ, global_step = 0)
 
-	#plt.hist(acts, 32)
-	#plt.show()
+	plt.hist(acts, 32)
+	plt.xlabel("Activation")
+	plt.ylabel("Frequency")
+	plt.show()
 
 	
 	coord.request_stop()
@@ -793,11 +824,13 @@ if __name__ == "__main__":
 	elif mode == modes[1]: # FeatureVis
 		feature_max('dilated_stack', 5, 32)
 	elif mode == modes[3]: #ABLATE
-		ablate(['dilated_stack'], [19]);#[0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
+		ablate(['dilated_stack'], [29]);#[0,1,2,5, 10, 11, 12, 13, 20, 25, 30, 35, 40, 45]);
 	elif mode == modes[4]: #INVESTIGATE
-		investigate(['dilated_stack'], [19], "D:\\MAESTRO\\maestro-v1.0.0\\2017\\MIDI-Unprocessed_051_PIANO051_MID--AUDIO-split_07-06-17_Piano-e_3-02_wav--2.wav")
+		#for i in range(98,101):
+		investigate(['dilated_stack'], [29], "D:\\MAESTRO\\Generated\\Comparision\\to_copy_210.wav", 211)
+		tf.reset_default_graph()
 	elif mode == modes[5]: #HISTOGRAMS
-		create_histograms(['dilated_stack'], [0,1,2,5])
+		create_histograms(['dilated_stack'], [45])
 	elif mode == modes[2]: #TRAIN
 		fw = tf.summary.FileWriter(logdir)
 		coord = tf.train.Coordinator()
